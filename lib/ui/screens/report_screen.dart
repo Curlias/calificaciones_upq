@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart';
+import 'dart:io';
+import 'student_profile_screen.dart';
 import '../../providers/data_provider.dart';
 import '../../providers/config_provider.dart';
 import '../../models/reporte.dart';
@@ -16,6 +19,7 @@ class _ReportScreenState extends State<ReportScreen> {
   String _filtroSeleccionado = 'todos';
   String _tipoReporte = 'individual';
   bool _generandoReporte = false;
+  String? _carpetaDestino;
 
   @override
   Widget build(BuildContext context) {
@@ -136,11 +140,24 @@ class _ReportScreenState extends State<ReportScreen> {
                       const DropdownMenuItem(value: 'aprobados', child: Text('Solo Aprobados')),
                       const DropdownMenuItem(value: 'reprobados', child: Text('Solo Reprobados')),
                       const DropdownMenuItem(value: 'recursamiento', child: Text('Solo Recursamiento')),
+                      if (dataProvider.generacionesDisponibles.isNotEmpty) ...[
+                        const DropdownMenuItem(
+                          value: 'divider_generaciones',
+                          enabled: false,
+                          child: Divider(),
+                        ),
+                        ...dataProvider.generacionesDisponibles.map((gen) =>
+                          DropdownMenuItem(value: 'generacion_$gen', child: Text('Generación: $gen')),
+                        ),
+                      ],
                       ...dataProvider.carreras.map((carrera) =>
                         DropdownMenuItem(value: 'carrera_$carrera', child: Text('Carrera: $carrera')),
                       ),
                       ...dataProvider.materias.map((materia) =>
                         DropdownMenuItem(value: 'materia_$materia', child: Text('Materia: $materia')),
+                      ),
+                      ...dataProvider.grupos.map((grupo) => grupo.nombre).toSet().map((grupoNombre) =>
+                        DropdownMenuItem(value: 'grupo_$grupoNombre', child: Text('Grupo: $grupoNombre')),
                       ),
                     ],
                     onChanged: (value) {
@@ -180,6 +197,30 @@ class _ReportScreenState extends State<ReportScreen> {
                 ),
               ],
             ),
+            
+            const SizedBox(height: 16),
+            
+            // Selector de carpeta destino
+            OutlinedButton.icon(
+              onPressed: _seleccionarCarpetaDestino,
+              icon: const Icon(Icons.folder_open),
+              label: Text(_carpetaDestino == null 
+                ? 'Seleccionar carpeta de destino' 
+                : 'Destino: ${_carpetaDestino!.split('/').last}'),
+              style: OutlinedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              ),
+            ),
+            if (_carpetaDestino != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  _carpetaDestino!,
+                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
           ],
         ),
       ),
@@ -298,7 +339,29 @@ class _ReportScreenState extends State<ReportScreen> {
                   ),
                 ),
                 title: Text(alumno.nombre),
-                subtitle: Text('${alumno.matricula} - ${alumno.nombreMateria}'),
+                subtitle: Row(
+                  children: [
+                    InkWell(
+                      onTap: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (context) => StudentProfileScreen(
+                              matricula: alumno.matricula,
+                            ),
+                          ),
+                        );
+                      },
+                      child: Text(
+                        alumno.matricula,
+                        style: const TextStyle(
+                          color: Colors.blue,
+                          decoration: TextDecoration.underline,
+                        ),
+                      ),
+                    ),
+                    Text(' - ${alumno.nombreMateria}'),
+                  ],
+                ),
                 trailing: Text(
                   alumno.calcularCalificacionFinalCalculada()?.toStringAsFixed(2) ?? 'S/C',
                   style: TextStyle(
@@ -391,7 +454,7 @@ class _ReportScreenState extends State<ReportScreen> {
     List<dynamic> alumnos = List.from(dataProvider.alumnos);
     List<dynamic> grupos = List.from(dataProvider.grupos);
 
-    if (_filtroSeleccionado != 'todos') {
+    if (_filtroSeleccionado != 'todos' && _filtroSeleccionado != 'divider_generaciones') {
       if (_filtroSeleccionado == 'aprobados') {
         alumnos = alumnos.where((a) => a.aprueba()).toList();
       } else if (_filtroSeleccionado == 'reprobados') {
@@ -401,6 +464,12 @@ class _ReportScreenState extends State<ReportScreen> {
         }).toList();
       } else if (_filtroSeleccionado == 'recursamiento') {
         alumnos = alumnos.where((a) => a.esRecursamiento).toList();
+      } else if (_filtroSeleccionado.startsWith('generacion_')) {
+        final generacion = _filtroSeleccionado.substring(11);
+        alumnos = alumnos.where((a) => a.generacion == generacion).toList();
+      } else if (_filtroSeleccionado.startsWith('grupo_')) {
+        final grupo = _filtroSeleccionado.substring(6);
+        alumnos = alumnos.where((a) => a.grupo == grupo).toList();
       } else if (_filtroSeleccionado.startsWith('carrera_')) {
         final carrera = _filtroSeleccionado.substring(8);
         alumnos = alumnos.where((a) => a.carrera == carrera).toList();
@@ -466,6 +535,12 @@ class _ReportScreenState extends State<ReportScreen> {
     if (_filtroSeleccionado == 'aprobados') return 'Solo aprobados';
     if (_filtroSeleccionado == 'reprobados') return 'Solo reprobados';
     if (_filtroSeleccionado == 'recursamiento') return 'Solo recursamiento';
+    if (_filtroSeleccionado.startsWith('generacion_')) {
+      return 'Generación: ${_filtroSeleccionado.substring(11)}';
+    }
+    if (_filtroSeleccionado.startsWith('grupo_')) {
+      return 'Grupo: ${_filtroSeleccionado.substring(6)}';
+    }
     if (_filtroSeleccionado.startsWith('carrera_')) {
       return 'Carrera: ${_filtroSeleccionado.substring(8)}';
     }
@@ -475,7 +550,26 @@ class _ReportScreenState extends State<ReportScreen> {
     return _filtroSeleccionado;
   }
 
+  Future<void> _seleccionarCarpetaDestino() async {
+    String? selectedDirectory = await FilePicker.platform.getDirectoryPath();
+    if (selectedDirectory != null) {
+      setState(() {
+        _carpetaDestino = selectedDirectory;
+      });
+    }
+  }
+
   Future<void> _generarReporte(DataProvider dataProvider, ConfigProvider configProvider) async {
+    if (_carpetaDestino == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Por favor, selecciona una carpeta de destino'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
     setState(() {
       _generandoReporte = true;
     });
@@ -532,7 +626,9 @@ class _ReportScreenState extends State<ReportScreen> {
       );
 
       final nombreArchivo = 'reporte_${alumno.matricula}_${alumno.nombre.replaceAll(' ', '_')}.pdf';
-      await PdfService.guardarPdf(pdfBytes, nombreArchivo);
+      final rutaCompleta = '$_carpetaDestino/$nombreArchivo';
+      final file = File(rutaCompleta);
+      await file.writeAsBytes(pdfBytes);
     }
   }
 
@@ -552,7 +648,9 @@ class _ReportScreenState extends State<ReportScreen> {
       );
 
       final nombreArchivo = 'reporte_grupo_${grupo.nombre}_${grupo.nombreMateria.replaceAll(' ', '_')}.pdf';
-      await PdfService.guardarPdf(pdfBytes, nombreArchivo);
+      final rutaCompleta = '$_carpetaDestino/$nombreArchivo';
+      final file = File(rutaCompleta);
+      await file.writeAsBytes(pdfBytes);
     }
   }
 

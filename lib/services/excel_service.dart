@@ -7,19 +7,26 @@ class ExcelService {
   static const String _hojaGruposOfi = 'GruposOfi';
 
   /// Parsea un archivo Excel y convierte los datos en listas de alumnos y grupos
-  static Future<Map<String, dynamic>> parseExcelFile(String filePath) async {
+  static Future<Map<String, dynamic>> parseExcelFile(
+    String filePath, {
+    String? sheetName,
+    Map<String, int>? columnMapping,
+  }) async {
     try {
       final bytes = await File(filePath).readAsBytes();
       final excel = Excel.decodeBytes(bytes);
       
-      // Verificar que existe la hoja GruposOfi
-      if (!excel.tables.containsKey(_hojaGruposOfi)) {
-        throw Exception('No se encontró la hoja "$_hojaGruposOfi" en el archivo Excel');
+      // Usar la hoja especificada o la hoja por defecto
+      final targetSheet = sheetName ?? _hojaGruposOfi;
+      
+      // Verificar que existe la hoja
+      if (!excel.tables.containsKey(targetSheet)) {
+        throw Exception('No se encontró la hoja "$targetSheet" en el archivo Excel');
       }
 
-      final sheet = excel.tables[_hojaGruposOfi]!;
-      final alumnos = await _parseAlumnos(sheet);
-      final grupos = _organizarPorGrupos(alumnos);
+      final sheet = excel.tables[targetSheet]!;
+      final alumnos = await _parseAlumnos(sheet, columnMapping: columnMapping);
+      final grupos = organizarPorGrupos(alumnos);
 
       return {
         'alumnos': alumnos,
@@ -38,9 +45,12 @@ class ExcelService {
   }
 
   /// Convierte las filas del Excel en objetos Alumno
-  static Future<List<Alumno>> _parseAlumnos(Sheet sheet) async {
+  static Future<List<Alumno>> _parseAlumnos(Sheet sheet, {Map<String, int>? columnMapping}) async {
     final List<Alumno> alumnos = [];
     final rows = sheet.rows;
+    
+    // Usar mapeo de columnas proporcionado o el predeterminado
+    final mapping = columnMapping ?? _defaultColumnMapping();
     
     if (rows.length < 2) {
       throw Exception('El archivo no contiene datos válidos');
@@ -51,34 +61,41 @@ class ExcelService {
       try {
         final row = rows[i];
         
-        // Obtener valores de las celdas (índice 0-based)
-        final id = _getCellValue(row, 0) ?? '';
-        final matricula = _getCellValue(row, 1) ?? '';
-        final nombre = _getCellValue(row, 2) ?? '';
-        final genero = _getCellValue(row, 3) ?? '';
-        final carrera = _getCellValue(row, 4) ?? '';
-        final grupo = _getCellValue(row, 5) ?? '';
-        final nombreMateria = _getCellValue(row, 6) ?? '';
+        // Obtener valores de las celdas usando el mapeo de columnas
+        final id = _getCellValue(row, mapping['ID']!) ?? '';
+        final matricula = _getCellValue(row, mapping['Matrícula']!) ?? '';
+        final nombre = _getCellValue(row, mapping['Nombre']!) ?? '';
+        final generoRaw = _getCellValue(row, mapping['Género']!) ?? '';
+        final genero = _normalizarGenero(generoRaw);
+        final carrera = _getCellValue(row, mapping['Carrera']!) ?? '';
+        final generacion = mapping.containsKey('Generación')
+            ? _getCellValue(row, mapping['Generación']!)
+            : null;
+        final grupo = _getCellValue(row, mapping['Grupo']!) ?? '';
+        final grupoMateria = mapping.containsKey('Grupo Materia') 
+            ? _getCellValue(row, mapping['Grupo Materia']!) 
+            : null;
+        final nombreMateria = _getCellValue(row, mapping['Materia']!) ?? '';
         
         // Parciales
-        final parcial1 = _parseDouble(_getCellValue(row, 7));
-        final parcial2 = _parseDouble(_getCellValue(row, 8));
-        final parcial3 = _parseDouble(_getCellValue(row, 9));
+        final parcial1 = _parseDouble(_getCellValue(row, mapping['Parcial 1']!));
+        final parcial2 = _parseDouble(_getCellValue(row, mapping['Parcial 2']!));
+        final parcial3 = _parseDouble(_getCellValue(row, mapping['Parcial 3']!));
         
         // Parciales finales
-        final parcialFinal1 = _parseDouble(_getCellValue(row, 10));
-        final parcialFinal2 = _parseDouble(_getCellValue(row, 11));
-        final parcialFinal3 = _parseDouble(_getCellValue(row, 12));
+        final parcialFinal1 = _parseDouble(_getCellValue(row, mapping['Parcial Final 1']!));
+        final parcialFinal2 = _parseDouble(_getCellValue(row, mapping['Parcial Final 2']!));
+        final parcialFinal3 = _parseDouble(_getCellValue(row, mapping['Parcial Final 3']!));
         
         // Faltas
-        final faltasP1 = _parseInt(_getCellValue(row, 13));
-        final faltasP2 = _parseInt(_getCellValue(row, 14));
-        final faltasP3 = _parseInt(_getCellValue(row, 15));
+        final faltasP1 = _parseInt(_getCellValue(row, mapping['Faltas P1']!));
+        final faltasP2 = _parseInt(_getCellValue(row, mapping['Faltas P2']!));
+        final faltasP3 = _parseInt(_getCellValue(row, mapping['Faltas P3']!));
         
         // Otros datos
-        final nombreProfesor = _getCellValue(row, 16) ?? '';
-        final nombreTutor = _getCellValue(row, 17);
-        final tipoCurso = _getCellValue(row, 18) ?? 'N';
+        final nombreProfesor = _getCellValue(row, mapping['Profesor']!) ?? '';
+        final nombreTutor = _getCellValue(row, mapping['Tutor']!);
+        final tipoCurso = _getCellValue(row, mapping['Tipo Curso']!) ?? 'N';
         
         final alumno = Alumno(
           id: id,
@@ -86,7 +103,9 @@ class ExcelService {
           nombre: nombre,
           genero: genero,
           carrera: carrera,
+          generacion: generacion,
           grupo: grupo,
+          grupoMateria: grupoMateria,
           nombreMateria: nombreMateria,
           nombreProfesor: nombreProfesor,
           nombreTutor: nombreTutor,
@@ -113,27 +132,57 @@ class ExcelService {
   }
 
   /// Organiza los alumnos por grupos
-  static List<Grupo> _organizarPorGrupos(List<Alumno> alumnos) {
+  static List<Grupo> organizarPorGrupos(List<Alumno> alumnos) {
     final Map<String, List<Alumno>> gruposMap = {};
     
     for (final alumno in alumnos) {
-      final key = '${alumno.grupo}_${alumno.nombreMateria}';
-      if (!gruposMap.containsKey(key)) {
-        gruposMap[key] = [];
+      // Agrupar solo por el grupo generacional, sin la materia
+      final grupoKey = alumno.grupo;
+      if (!gruposMap.containsKey(grupoKey)) {
+        gruposMap[grupoKey] = [];
       }
-      gruposMap[key]!.add(alumno);
+      gruposMap[grupoKey]!.add(alumno);
     }
     
     return gruposMap.entries.map((entry) {
-      final alumnos = entry.value;
+      final alumnosGrupo = entry.value;
+      // Obtener la primera materia como referencia (o podría ser "Múltiples materias")
+      final materiasUnicas = alumnosGrupo.map((a) => a.nombreMateria).toSet();
+      final nombreMateria = materiasUnicas.length == 1 
+          ? materiasUnicas.first 
+          : 'Múltiples materias';
+      
       return Grupo(
-        nombre: alumnos.first.grupo,
-        materia: alumnos.first.nombreMateria,
-        alumnos: alumnos,
-        profesor: alumnos.first.nombreProfesor,
-        carrera: alumnos.first.carrera,
+        nombre: entry.key,
+        materia: nombreMateria,
+        alumnos: alumnosGrupo,
+        profesor: alumnosGrupo.first.nombreProfesor,
+        tutor: alumnosGrupo.first.nombreTutor,
+        carrera: alumnosGrupo.first.carrera,
       );
     }).toList();
+  }
+
+  /// Extrae el grupo generacional del grupo completo
+  /// Ejemplo: "IRT201-A" -> "IRT201", "IDIA-M" -> "IDIA"
+  static String _extraerGrupoGeneracional(String grupoCompleto) {
+    // Buscar patrón: letras seguidas de números (IRT201, IDIA101, etc.)
+    final regex = RegExp(r'^([A-Z]+\d+)', caseSensitive: true);
+    final match = regex.firstMatch(grupoCompleto);
+    if (match != null) {
+      return match.group(1)!;
+    }
+    
+    // Si no encuentra patrón, intenta separar por guión o espacio
+    if (grupoCompleto.contains('-')) {
+      return grupoCompleto.split('-').first.trim();
+    }
+    if (grupoCompleto.contains(' ')) {
+      return grupoCompleto.split(' ').first.trim();
+    }
+    
+    // Si no hay separador, devolver todo
+    return grupoCompleto;
   }
 
   /// Obtiene el valor de una celda como String
@@ -164,8 +213,28 @@ class ExcelService {
     }
   }
 
+  /// Normaliza el género a M o F
+  static String _normalizarGenero(String genero) {
+    final generoLower = genero.toLowerCase().trim();
+    
+    // Masculino: M, masculino, hombre, h, male, man
+    if (generoLower.startsWith('m') || generoLower.startsWith('h') || 
+        generoLower == 'male' || generoLower == 'man') {
+      return 'M';
+    }
+    
+    // Femenino: F, femenino, mujer, m (cuando ya descartamos masculino), female, woman
+    if (generoLower.startsWith('f') || generoLower == 'mujer' || 
+        generoLower == 'female' || generoLower == 'woman') {
+      return 'F';
+    }
+    
+    // Por defecto, devolver el valor original
+    return genero.toUpperCase();
+  }
+
   /// Valida la estructura del archivo Excel
-  static Future<Map<String, dynamic>> validateExcelStructure(String filePath) async {
+  static Future<Map<String, dynamic>> validateExcelStructure(String filePath, {String? sheetName}) async {
     try {
       final bytes = await File(filePath).readAsBytes();
       final excel = Excel.decodeBytes(bytes);
@@ -173,16 +242,19 @@ class ExcelService {
       final errors = <String>[];
       final warnings = <String>[];
 
-      // Verificar que existe la hoja GruposOfi
-      if (!excel.tables.containsKey(_hojaGruposOfi)) {
-        errors.add('No se encontró la hoja "$_hojaGruposOfi"');
+      // Si se especifica una hoja, validar esa hoja; sino, usar la hoja por defecto
+      final targetSheet = sheetName ?? _hojaGruposOfi;
+      
+      // Verificar que existe la hoja especificada
+      if (!excel.tables.containsKey(targetSheet)) {
+        errors.add('No se encontró la hoja "$targetSheet"');
       } else {
-        final sheet = excel.tables[_hojaGruposOfi]!;
+        final sheet = excel.tables[targetSheet]!;
         final rows = sheet.rows;
 
         // Verificar que tiene al menos 2 filas (header + data)
         if (rows.length < 2) {
-          errors.add('La hoja "$_hojaGruposOfi" no contiene datos');
+          errors.add('La hoja "$targetSheet" no contiene datos');
         } else {
           final headerRow = rows[0];
           
@@ -218,5 +290,32 @@ class ExcelService {
         'warnings': <String>[],
       };
     }
+  }
+
+  /// Mapeo de columnas por defecto (mantiene compatibilidad con formato original)
+  static Map<String, int> _defaultColumnMapping() {
+    return {
+      'ID': 0,
+      'Matrícula': 1,
+      'Nombre': 2,
+      'Género': 3,
+      'Carrera': 4,
+      'Generación': 5,
+      'Grupo': 6,
+      'Grupo Materia': 7,
+      'Materia': 8,
+      'Parcial 1': 9,
+      'Parcial 2': 10,
+      'Parcial 3': 11,
+      'Parcial Final 1': 12,
+      'Parcial Final 2': 13,
+      'Parcial Final 3': 14,
+      'Faltas P1': 15,
+      'Faltas P2': 16,
+      'Faltas P3': 17,
+      'Profesor': 18,
+      'Tutor': 19,
+      'Tipo Curso': 20,
+    };
   }
 }

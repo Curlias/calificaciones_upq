@@ -5,10 +5,14 @@ import '../../services/excel_service.dart';
 
 class ImportScreen extends StatefulWidget {
   final String filePath;
+  final String? sheetName;
+  final Map<String, int>? columnMapping;
 
   const ImportScreen({
     super.key,
     required this.filePath,
+    this.sheetName,
+    this.columnMapping,
   });
 
   @override
@@ -24,7 +28,14 @@ class _ImportScreenState extends State<ImportScreen> {
   @override
   void initState() {
     super.initState();
-    _validateFile();
+    // Si viene con mapeo personalizado, importar directamente sin validar
+    if (widget.columnMapping != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _importFile();
+      });
+    } else {
+      _validateFile();
+    }
   }
 
   @override
@@ -34,7 +45,7 @@ class _ImportScreenState extends State<ImportScreen> {
         title: const Text('Importar Archivo Excel'),
         elevation: 2,
       ),
-      body: Padding(
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -75,55 +86,85 @@ class _ImportScreenState extends State<ImportScreen> {
 
             const SizedBox(height: 16),
 
-            // Validación del archivo
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Icon(
-                          _isValidating
-                              ? Icons.hourglass_empty
-                              : _validationResult != null
-                                  ? (_validationResult!['valid'] ? Icons.check_circle : Icons.error)
-                                  : Icons.help_outline,
-                          color: _isValidating
-                              ? Colors.orange
-                              : _validationResult != null
-                                  ? (_validationResult!['valid'] ? Colors.green : Colors.red)
-                                  : Colors.grey,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Validación del Archivo',
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    if (_isValidating)
-                      const Row(
+            // Validación del archivo (solo si no tiene mapeo personalizado)
+            if (widget.columnMapping == null)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
                         children: [
-                          SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2),
+                          Icon(
+                            _isValidating
+                                ? Icons.hourglass_empty
+                                : _validationResult != null
+                                    ? ((_validationResult!['isValid'] ?? false) ? Icons.check_circle : Icons.error)
+                                    : Icons.help_outline,
+                            color: _isValidating
+                                ? Colors.orange
+                                : _validationResult != null
+                                    ? ((_validationResult!['isValid'] ?? false) ? Colors.green : Colors.red)
+                                    : Colors.grey,
                           ),
-                          SizedBox(width: 8),
-                          Text('Validando estructura del archivo...'),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Validación del Archivo',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
                         ],
-                      )
-                    else if (_validationResult != null)
-                      _buildValidationResults()
-                    else
-                      const Text('Esperando validación...'),
-                  ],
+                      ),
+                      const SizedBox(height: 8),
+                      if (_isValidating)
+                        const Row(
+                          children: [
+                            SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                            SizedBox(width: 8),
+                            Text('Validando estructura del archivo...'),
+                          ],
+                        )
+                      else if (_validationResult != null)
+                        _buildValidationResults()
+                      else
+                        const Text('Esperando validación...'),
+                    ],
+                  ),
                 ),
               ),
-            ),
+
+            // Si viene con mapeo personalizado, mostrar progreso de importación
+            if (widget.columnMapping != null && _importResult == null)
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(strokeWidth: 3),
+                          ),
+                          const SizedBox(width: 12),
+                          Text(
+                            'Importando Datos...',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      const Text('Procesando archivo con configuración personalizada'),
+                    ],
+                  ),
+                ),
+              ),
 
             const SizedBox(height: 16),
 
@@ -168,35 +209,48 @@ class _ImportScreenState extends State<ImportScreen> {
               const SizedBox(height: 16),
             ],
 
-            const Spacer(),
+            const SizedBox(height: 24),
 
             // Botones de acción
-            Row(
-              children: [
-                Expanded(
+            if (widget.columnMapping == null) ...[
+              // Si NO tiene mapeo personalizado, mostrar botones tradicionales
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.pop(context),
+                      child: const Text('Cancelar'),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: ElevatedButton(
+                      onPressed: _canImport() ? _importFile : null,
+                      child: _isImporting
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                              ),
+                            )
+                          : const Text('Importar'),
+                    ),
+                  ),
+                ],
+              ),
+            ] else ...[
+              // Si TIENE mapeo personalizado y NO ha terminado, solo botón cancelar
+              if (_importResult == null)
+                SizedBox(
+                  width: double.infinity,
                   child: OutlinedButton(
                     onPressed: () => Navigator.pop(context),
                     child: const Text('Cancelar'),
                   ),
                 ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: ElevatedButton(
-                    onPressed: _canImport() ? _importFile : null,
-                    child: _isImporting
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
-                            ),
-                          )
-                        : const Text('Importar'),
-                  ),
-                ),
-              ],
-            ),
+            ],
 
             if (_importResult != null && _importResult!['success']) ...[
               const SizedBox(height: 16),
@@ -220,7 +274,7 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Widget _buildValidationResults() {
-    final isValid = _validationResult!['valid'] as bool;
+    final isValid = (_validationResult!['isValid'] ?? false) as bool;
     final errors = _validationResult!['errors'] as List<String>;
     final warnings = _validationResult!['warnings'] as List<String>;
 
@@ -289,7 +343,7 @@ class _ImportScreenState extends State<ImportScreen> {
 
   bool _canImport() {
     return _validationResult != null &&
-           _validationResult!['valid'] &&
+           (_validationResult!['isValid'] ?? false) &&
            !_isImporting &&
            _importResult == null;
   }
@@ -300,7 +354,10 @@ class _ImportScreenState extends State<ImportScreen> {
     });
 
     try {
-      final result = await ExcelService.validateExcelStructure(widget.filePath);
+      final result = await ExcelService.validateExcelStructure(
+        widget.filePath,
+        sheetName: widget.sheetName,
+      );
       setState(() {
         _validationResult = result;
         _isValidating = false;
@@ -324,7 +381,11 @@ class _ImportScreenState extends State<ImportScreen> {
 
     try {
       final dataProvider = Provider.of<DataProvider>(context, listen: false);
-      final success = await dataProvider.cargarDatosDesdeExcel(widget.filePath);
+      final success = await dataProvider.cargarDatosDesdeExcel(
+        widget.filePath,
+        sheetName: widget.sheetName,
+        columnMapping: widget.columnMapping,
+      );
       
       setState(() {
         _importResult = {

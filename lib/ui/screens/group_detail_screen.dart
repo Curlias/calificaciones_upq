@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:syncfusion_flutter_charts/charts.dart';
+import 'student_profile_screen.dart';
 import '../../models/grupo.dart';
 import '../../models/alumno.dart';
 import '../../models/reporte.dart';
 import '../../providers/config_provider.dart';
 import '../../services/pdf_service.dart';
+import '../widgets/app_drawer.dart';
 
 class GroupDetailScreen extends StatefulWidget {
   final Grupo grupo;
@@ -43,13 +45,14 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
         return Theme(
           data: configProvider.tema,
           child: Scaffold(
+            drawer: const AppDrawer(),
             appBar: AppBar(
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text('Grupo ${widget.grupo.nombre}'),
                   Text(
-                    widget.grupo.nombreMateria,
+                    '${_getMaterias().length} materia(s)',
                     style: const TextStyle(fontSize: 14, fontWeight: FontWeight.normal),
                   ),
                 ],
@@ -143,9 +146,11 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                     ],
                   ),
                   const SizedBox(height: 12),
-                  _buildInfoItem('Materia', widget.grupo.nombreMateria),
+                  _buildInfoItem('Materias', '${_getMaterias().length} materia(s)'),
                   const SizedBox(height: 12),
-                  _buildInfoItem('Profesor', widget.grupo.nombreProfesor),
+                  ..._buildMateriasList(),
+                  const SizedBox(height: 12),
+                  _buildInfoItem('Carrera', widget.grupo.carrera),
                 ],
               ),
             ),
@@ -397,7 +402,24 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                         ),
                       ),
                       title: Text(alumno.nombre),
-                      subtitle: Text(alumno.matricula),
+                      subtitle: InkWell(
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => StudentProfileScreen(
+                                matricula: alumno.matricula,
+                              ),
+                            ),
+                          );
+                        },
+                        child: Text(
+                          alumno.matricula,
+                          style: const TextStyle(
+                            color: Colors.blue,
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ),
                       trailing: Text('${alumno.totalFaltas} faltas'),
                     )),
                   ],
@@ -439,7 +461,24 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                         child: const Icon(Icons.refresh, color: Colors.white, size: 16),
                       ),
                       title: Text(alumno.nombre),
-                      subtitle: Text(alumno.matricula),
+                      subtitle: InkWell(
+                        onTap: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (context) => StudentProfileScreen(
+                                matricula: alumno.matricula,
+                              ),
+                            ),
+                          );
+                        },
+                        child: Text(
+                          alumno.matricula,
+                          style: const TextStyle(
+                            color: Colors.blue,
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ),
                       trailing: Text(
                         alumno.calcularCalificacionFinalCalculada()?.toStringAsFixed(2) ?? 'S/C',
                         style: TextStyle(
@@ -998,6 +1037,41 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
         _generandoPdf = false;
       });
     }
+  }
+
+  List<String> _getMaterias() {
+    return widget.grupo.alumnos
+        .map((a) => a.nombreMateria)
+        .toSet()
+        .toList()
+      ..sort();
+  }
+
+  List<Widget> _buildMateriasList() {
+    final materias = _getMaterias();
+    return [
+      const Text(
+        'Materias del grupo:',
+        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+      ),
+      const SizedBox(height: 4),
+      Wrap(
+        spacing: 6,
+        runSpacing: 6,
+        children: materias.map((materia) {
+          final alumnosMateria = widget.grupo.alumnos
+              .where((a) => a.nombreMateria == materia)
+              .toList();
+          return Chip(
+            label: Text(
+              '$materia (${alumnosMateria.length})',
+              style: const TextStyle(fontSize: 11),
+            ),
+            visualDensity: VisualDensity.compact,
+          );
+        }).toList(),
+      ),
+    ];
   }
 }
 

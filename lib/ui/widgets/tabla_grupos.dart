@@ -69,7 +69,7 @@ class TablaGrupos extends StatelessWidget {
                 const Expanded(
                   flex: 3,
                   child: Text(
-                    'Profesor',
+                    'Tutor',
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
@@ -182,11 +182,11 @@ class TablaGrupos extends StatelessWidget {
               ),
             ),
             
-            // Profesor
+            // Tutor
             Expanded(
               flex: 3,
               child: Text(
-                grupo.nombreProfesor,
+                grupo.tutor ?? 'No asignado',
                 style: const TextStyle(fontSize: 14),
                 overflow: TextOverflow.ellipsis,
               ),

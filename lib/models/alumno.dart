@@ -4,7 +4,9 @@ class Alumno {
   final String nombre;
   final String genero;
   final String carrera;
-  final String grupo;
+  final String? generacion; // Año/cohorte de ingreso (ej: 2021, 2022)
+  final String grupo; // Grupo de la generación (ej: IRT201, IRT202)
+  final String? grupoMateria; // Grupo específico de la materia (puede incluir recursadores de otras generaciones)
   final String nombreMateria;
   final String nombreProfesor;
   final String? nombreTutor;
@@ -29,7 +31,9 @@ class Alumno {
     required this.nombre,
     required this.genero,
     required this.carrera,
+    this.generacion,
     required this.grupo,
+    this.grupoMateria,
     required this.nombreMateria,
     required this.nombreProfesor,
     this.nombreTutor,

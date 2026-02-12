@@ -17,6 +17,8 @@ class GraficaDistribucion extends StatelessWidget {
     return SfCartesianChart(
       primaryXAxis: const CategoryAxis(
         title: AxisTitle(text: 'Rango de Calificaciones'),
+        labelRotation: -45,
+        labelStyle: TextStyle(fontSize: 10),
       ),
       primaryYAxis: const NumericAxis(
         title: AxisTitle(text: 'Número de Alumnos'),
@@ -44,11 +46,26 @@ class GraficaDistribucion extends StatelessWidget {
   }
 
   List<DistribucionData> _calcularDistribucion() {
+    // Agrupar alumnos por matrícula y calcular su promedio general
+    final Map<String, List<double>> calificacionesPorMatricula = {};
+    
+    for (final alumno in alumnos) {
+      final cal = alumno.calcularCalificacionFinalCalculada();
+      if (cal != null) {
+        if (!calificacionesPorMatricula.containsKey(alumno.matricula)) {
+          calificacionesPorMatricula[alumno.matricula] = [];
+        }
+        calificacionesPorMatricula[alumno.matricula]!.add(cal);
+      }
+    }
+
+    // Alumnos sin ninguna calificación
+    final Set<String> matriculasConCalificacion = calificacionesPorMatricula.keys.toSet();
+    final Set<String> todasLasMatriculas = alumnos.map((a) => a.matricula).toSet();
+    final int alumnosSinCalificar = todasLasMatriculas.difference(matriculasConCalificacion).length;
+
     // Definir rangos de calificaciones
     final rangos = [
-      ('0.0-2.9', 0.0, 2.9, Colors.red),
-      ('3.0-4.9', 3.0, 4.9, Colors.deepOrange),
-      ('5.0-6.9', 5.0, 6.9, Colors.orange),
       ('7.0-7.9', 7.0, 7.9, Colors.yellow[700]!),
       ('8.0-8.9', 8.0, 8.9, Colors.lightGreen),
       ('9.0-10.0', 9.0, 10.0, Colors.green),
@@ -64,29 +81,28 @@ class GraficaDistribucion extends StatelessWidget {
       colores[rango.$1] = rango.$4;
     }
 
-    // Contar alumnos por rango
-    for (final alumno in alumnos) {
-      final calificacion = alumno.calcularCalificacionFinalCalculada();
+    // Contar alumnos únicos por rango según su promedio general
+    for (final calificaciones in calificacionesPorMatricula.values) {
+      final promedioAlumno = calificaciones.reduce((a, b) => a + b) / calificaciones.length;
       
-      if (calificacion == null) {
-        contadores['Sin Calificar'] = contadores['Sin Calificar']! + 1;
-      } else {
-        bool asignado = false;
-        for (final rango in rangos) {
-          if (rango.$1 != 'Sin Calificar' && 
-              calificacion >= rango.$2 && 
-              calificacion <= rango.$3) {
-            contadores[rango.$1] = contadores[rango.$1]! + 1;
-            asignado = true;
-            break;
-          }
-        }
-        if (!asignado && calificacion >= 0) {
-          // Fallback para valores fuera de rango
-          contadores['9.0-10.0'] = contadores['9.0-10.0']! + 1;
+      bool asignado = false;
+      for (final rango in rangos) {
+        if (rango.$1 != 'Sin Calificar' && 
+            promedioAlumno >= rango.$2 && 
+            promedioAlumno <= rango.$3) {
+          contadores[rango.$1] = contadores[rango.$1]! + 1;
+          asignado = true;
+          break;
         }
       }
+      if (!asignado && promedioAlumno >= 0) {
+        // Fallback para valores fuera de rango
+        contadores['9.0-10.0'] = contadores['9.0-10.0']! + 1;
+      }
     }
+
+    // Agregar alumnos sin calificar
+    contadores['Sin Calificar'] = alumnosSinCalificar;
 
     // Convertir a lista para la gráfica
     return contadores.entries

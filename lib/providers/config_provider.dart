@@ -6,11 +6,11 @@ class ConfigProvider extends ChangeNotifier {
   
   // Configuración institucional
   String _nombreInstitucion = 'Universidad Politécnica de Querétaro';
-  String? _logoPath;
+  String? _logoPath = 'assets/images/upq_logo.png';
   
   // Configuración visual
-  Color _colorPrimario = Colors.blue;
-  Color _colorSecundario = Colors.indigo;
+  Color _colorPrimario = const Color(0xFF151830); // Azul marino oscuro
+  Color _colorSecundario = const Color(0xFF8C2437); // Rojo marrón
   String _fuenteSeleccionada = 'Roboto';
   
   // Configuración de reportes
