@@ -66,16 +66,29 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.3
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
 # The following section is specific to Flutter packages.
+flutter_launcher_icons:
+  image_path: "assets/images/upq_logo.png"
+  android: true
+  ios: false
+  macos:
+    generate: true
+    image_path: "assets/images/upq_logo.png"
+  windows:
+    generate: true
+    image_path: "assets/images/upq_logo.png"
+    icon_size: 256
+  linux:
+    generate: true
+    image_path: "assets/images/upq_logo.png"
+
 flutter:
 
-  # The following line ensures that the Material Icons font is
-  # included with your application, so that you can use the icons in
-  # the material Icons class.
   uses-material-design: true
 
   # To add assets to your application, add an assets section, like this:
