@@ -119,6 +119,46 @@ class Alumno {
   /// Obtiene el total de faltas
   int get totalFaltas => faltasP1 + faltasP2 + faltasP3;
 
+  /// Número de parciales reprobados (calificación calculada < 7)
+  int get parcialesReprobados {
+    int count = 0;
+    for (int i = 1; i <= 3; i++) {
+      final cal = calcularCalificacionParcial(i);
+      if (cal != null && cal < 7.0) count++;
+    }
+    return count;
+  }
+
+  /// Alumno en riesgo: 2+ faltas totales O 2+ parciales reprobados
+  bool get estaEnRiesgo => totalFaltas >= 2 || parcialesReprobados >= 2;
+
+  /// Necesita examen extraordinario: calificación final entre 5.0 y 6.9
+  bool get necesitaExtraordinario {
+    final cal = calcularCalificacionFinalCalculada();
+    return cal != null && cal >= 5.0 && cal < 7.0;
+  }
+
+  /// Rango de calificación para distribución por rangos
+  String get rangoCalificacion {
+    final cal = calcularCalificacionFinalCalculada();
+    if (cal == null) return 'S/C';
+    if (cal < 5.0) return '0–5';
+    if (cal < 7.0) return '5–7';
+    if (cal < 8.0) return '7–8';
+    if (cal < 9.0) return '8–9';
+    return '9–10';
+  }
+
+  /// Estado de semáforo: verde / amarillo / rojo / gris
+  String get estadoSemaforo {
+    if (estaEnRiesgo) return 'rojo';
+    final cal = calcularCalificacionFinalCalculada();
+    if (cal == null) return 'gris';
+    if (cal >= 7.0) return 'verde';
+    if (cal >= 5.0) return 'amarillo';
+    return 'rojo';
+  }
+
   /// Obtiene una descripción del estado académico
   String get estadoAcademico {
     if (aprueba()) return 'Aprobado';

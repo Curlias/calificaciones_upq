@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:excel/excel.dart';
+import 'package:excel2003/excel2003.dart';
 import 'dart:io';
+import 'dart:typed_data';
 import 'import_screen.dart';
 
 class ImportConfigScreen extends StatefulWidget {
@@ -62,16 +64,39 @@ class _ImportConfigScreenState extends State<ImportConfigScreen> {
       });
 
       final bytes = await File(widget.filePath).readAsBytes();
-      _excel = Excel.decodeBytes(bytes);
+      final extension = widget.filePath.split('.').last.toLowerCase();
 
-      _sheetNames = _excel!.tables.keys.toList();
+      // Detectar formato con fallback automático:
+      // .xls puede contener OOXML (renombrado), .xlsx puede ser BIFF8 (raro).
+      bool loadedAsOoxml = false;
 
-      for (String sheetName in _sheetNames) {
-        final sheet = _excel!.tables[sheetName]!;
-        if (sheet.rows.isNotEmpty) {
-          _sheetHeaders[sheetName] = sheet.rows[0]
-              .map((cell) => cell?.value?.toString() ?? '')
-              .toList();
+      if (extension == 'xls') {
+        // Intentar BIFF8 primero; si falla intentar OOXML
+        try {
+          _loadFromBiff8(bytes);
+        } catch (_) {
+          _excel = Excel.decodeBytes(bytes);
+          loadedAsOoxml = true;
+        }
+      } else {
+        // Intentar OOXML primero; fallback a BIFF8
+        try {
+          _excel = Excel.decodeBytes(bytes);
+          loadedAsOoxml = true;
+        } catch (_) {
+          _loadFromBiff8(bytes);
+        }
+      }
+
+      if (loadedAsOoxml && _excel != null) {
+        _sheetNames = _excel!.tables.keys.toList();
+        for (final sheetName in _sheetNames) {
+          final sheet = _excel!.tables[sheetName]!;
+          if (sheet.rows.isNotEmpty) {
+            _sheetHeaders[sheetName] = sheet.rows[0]
+                .map((cell) => cell?.value?.toString() ?? '')
+                .toList();
+          }
         }
       }
 
@@ -431,6 +456,26 @@ class _ImportConfigScreenState extends State<ImportConfigScreen> {
         ),
       ],
     );
+  }
+
+  /// Carga hojas y encabezados desde un archivo BIFF8/OLE2 (.xls real).
+  void _loadFromBiff8(Uint8List bytes) {
+    _excel = null; // sin Excel object → preview se oculta automáticamente
+    final reader = XlsReader.fromBytes(bytes);
+    if (reader.sheetCount == 0) {
+      throw Exception('El archivo no contiene hojas de cálculo');
+    }
+    _sheetNames = reader.sheetNames;
+    for (int i = 0; i < reader.sheetCount; i++) {
+      final xlsSheet = reader.sheet(i);
+      final name = _sheetNames[i];
+      if (xlsSheet.rowCount > 0) {
+        _sheetHeaders[name] = xlsSheet
+            .row(xlsSheet.firstRow)
+            .map((v) => v?.toString() ?? '')
+            .toList();
+      }
+    }
   }
 
   void _proceedToImport() {

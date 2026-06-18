@@ -87,6 +87,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     'Configuración Visual',
                     Icons.palette,
                     [
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Modo oscuro',
+                            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                        subtitle: const Text('Cambia la apariencia de la aplicación'),
+                        secondary: Icon(
+                          configProvider.modoOscuro ? Icons.dark_mode : Icons.light_mode,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        value: configProvider.modoOscuro,
+                        onChanged: (value) => configProvider.modoOscuro = value,
+                      ),
+                      const Divider(),
+                      const SizedBox(height: 8),
                       _buildSelectorColor(
                         'Color Primario',
                         configProvider.colorPrimario,

@@ -7,7 +7,9 @@ import '../../models/alumno.dart';
 import '../../models/reporte.dart';
 import '../../providers/config_provider.dart';
 import '../../services/pdf_service.dart';
+import '../../services/excel_export_service.dart';
 import '../widgets/app_drawer.dart';
+import '../widgets/alumnos_riesgo_widget.dart';
 
 class GroupDetailScreen extends StatefulWidget {
   final Grupo grupo;
@@ -47,6 +49,9 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
           child: Scaffold(
             drawer: const AppDrawer(),
             appBar: AppBar(
+              backgroundColor: const Color(0xFF151830),
+              foregroundColor: Colors.white,
+              iconTheme: const IconThemeData(color: Colors.white),
               title: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -81,11 +86,24 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                         ],
                       ),
                     ),
+                    const PopupMenuItem(
+                      value: 'exportar_excel',
+                      child: Row(
+                        children: [
+                          Icon(Icons.table_chart, color: Colors.green),
+                          SizedBox(width: 8),
+                          Text('Exportar a Excel'),
+                        ],
+                      ),
+                    ),
                   ],
                 ),
               ],
               bottom: TabBar(
                 controller: _tabController,
+                labelColor: Colors.white,
+                unselectedLabelColor: Colors.white54,
+                indicatorColor: Colors.white,
                 tabs: const [
                   Tab(icon: Icon(Icons.info), text: 'Resumen'),
                   Tab(icon: Icon(Icons.people), text: 'Alumnos'),
@@ -235,6 +253,7 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
   }
 
   Widget _buildAlumnosTab() {
+    final resumen = _buildResumenAlumnos();
     final alumnos = _getAlumnosOrdenados();
 
     return Column(
@@ -266,18 +285,35 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                   },
                 ),
               ),
+              const SizedBox(width: 12),
+              Text(
+                '${alumnos.length} alumnos',
+                style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+              ),
             ],
           ),
         ),
 
-        // Lista de alumnos
+        // Lista de alumnos (únicos por matrícula)
         Expanded(
           child: ListView.builder(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             itemCount: alumnos.length,
             itemBuilder: (context, index) {
               final alumno = alumnos[index];
-              return _buildTarjetaAlumno(alumno, index + 1);
+              final stats = resumen[alumno.matricula]!;
+              final cals = stats['cals'] as List<double>;
+              final prom = cals.isEmpty
+                  ? null
+                  : cals.reduce((a, b) => a + b) / cals.length;
+              final faltas = stats['faltas'] as int;
+              final numMaterias = stats['materias'] as int;
+              return _buildTarjetaAlumno(
+                alumno, index + 1,
+                promedioAgregado: prom,
+                faltasAgregadas: faltas,
+                numMaterias: numMaterias,
+              );
             },
           ),
         ),
@@ -357,13 +393,114 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
   Widget _buildAnalisisTab() {
     final alumnosConMasFaltas = widget.grupo.alumnosConMasFaltas;
     final alumnosRecursamiento = widget.grupo.alumnosRecursamiento;
+    final alumnosEnRiesgo = widget.grupo.alumnosEnRiesgo;
+    final tasaReprobacion = widget.grupo.tasaReprobacionPorParcial;
+    final correlacion = widget.grupo.correlacionFaltasCalificacion;
+    final distribucion = widget.grupo.distribucionRangos;
+    final parcialDificil = widget.grupo.parcialMasDificil;
+    final pctExtraordinario = widget.grupo.porcentajeExtraordinario;
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Análisis de faltas
+          // --- Alumnos en riesgo ---
+          AlumnosRiesgoWidget(
+            alumnos: alumnosEnRiesgo,
+            onVerPerfil: (matricula) => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => StudentProfileScreen(matricula: matricula),
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // --- Métricas avanzadas ---
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(children: [
+                    Icon(Icons.analytics, color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 8),
+                    Text('Métricas Avanzadas',
+                        style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
+                  ]),
+                  const SizedBox(height: 16),
+                  _buildMetricRow(
+                    'Parcial más difícil',
+                    parcialDificil > 0 ? 'Parcial $parcialDificil' : 'N/D',
+                    Icons.trending_down,
+                    Colors.red,
+                  ),
+                  _buildMetricRow(
+                    'Alumnos que necesitan extraordinario',
+                    '${widget.grupo.alumnosNecesitanExtraordinario.length} (${pctExtraordinario.toStringAsFixed(1)}%)',
+                    Icons.school_outlined,
+                    Colors.purple,
+                  ),
+                  _buildMetricRow(
+                    'Correlación faltas↔calificación',
+                    correlacion.isNaN ? 'N/D' : '${correlacion.toStringAsFixed(2)} (${_interpretarCorrelacion(correlacion)})',
+                    Icons.swap_vert,
+                    correlacion.isNaN ? Colors.grey : (correlacion < -0.3 ? Colors.orange : Colors.blue),
+                  ),
+                  if (tasaReprobacion.isNotEmpty) ...[
+                    const Divider(height: 24),
+                    const Text('Tasa de reprobación por parcial:',
+                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    const SizedBox(height: 8),
+                    ...tasaReprobacion.entries.map((e) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(children: [
+                        SizedBox(
+                          width: 80,
+                          child: Text('Parcial ${e.key}:', style: const TextStyle(fontSize: 13)),
+                        ),
+                        Expanded(
+                          child: LinearProgressIndicator(
+                            value: e.value / 100,
+                            backgroundColor: Colors.grey[200],
+                            color: e.value > 50 ? Colors.red : Colors.orange,
+                            minHeight: 10,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text('${e.value.toStringAsFixed(1)}%',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: e.value > 50 ? Colors.red : Colors.orange,
+                            )),
+                      ]),
+                    )),
+                  ],
+                  if (distribucion.isNotEmpty) ...[
+                    const Divider(height: 24),
+                    const Text('Distribución por rango de calificación:',
+                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 6,
+                      children: distribucion.entries.map((e) => Chip(
+                        label: Text('${e.key}: ${e.value}', style: const TextStyle(fontSize: 12)),
+                        backgroundColor: _colorRango(e.key).withOpacity(0.15),
+                        side: BorderSide(color: _colorRango(e.key).withOpacity(0.4)),
+                      )).toList(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+
+          // --- Análisis de faltas (original) ---
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -554,13 +691,27 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
     );
   }
 
-  Widget _buildTarjetaAlumno(Alumno alumno, int posicion) {
-    final calificacion = alumno.calcularCalificacionFinalCalculada();
+  Widget _buildTarjetaAlumno(
+    Alumno alumno,
+    int posicion, {
+    double? promedioAgregado,
+    int faltasAgregadas = 0,
+    int numMaterias = 1,
+  }) {
+    final calificacion = promedioAgregado ?? alumno.calcularCalificacionFinalCalculada();
     final colorCalificacion = _getColorCalificacion(calificacion);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      child: Padding(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: () => Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => StudentProfileScreen(matricula: alumno.matricula),
+          ),
+        ),
+        child: Padding(
         padding: const EdgeInsets.all(12),
         child: Row(
           children: [
@@ -582,9 +733,9 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                 ),
               ),
             ),
-            
+
             const SizedBox(width: 12),
-            
+
             // Información del alumno
             Expanded(
               child: Column(
@@ -604,6 +755,11 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                       fontSize: 14,
                     ),
                   ),
+                  if (numMaterias > 1)
+                    Text(
+                      '$numMaterias materias',
+                      style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                    ),
                   if (alumno.esRecursamiento)
                     Container(
                       margin: const EdgeInsets.only(top: 4),
@@ -620,7 +776,7 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                 ],
               ),
             ),
-            
+
             // Estadísticas
             Column(
               crossAxisAlignment: CrossAxisAlignment.end,
@@ -641,7 +797,7 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '${alumno.totalFaltas} faltas',
+                  '$faltasAgregadas faltas',
                   style: TextStyle(
                     fontSize: 12,
                     color: Colors.grey[600],
@@ -651,6 +807,7 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
             ),
           ],
         ),
+      ),
       ),
     );
   }
@@ -891,16 +1048,39 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
     );
   }
 
+  /// Construye un resumen por alumno: promedio y faltas acumuladas de TODAS sus materias.
+  Map<String, Map<String, dynamic>> _buildResumenAlumnos() {
+    final Map<String, Map<String, dynamic>> res = {};
+    for (final a in widget.grupo.alumnos) {
+      if (!res.containsKey(a.matricula)) {
+        res[a.matricula] = {
+          'alumno': a,
+          'cals': <double>[],
+          'faltas': 0,
+          'materias': 0,
+        };
+      }
+      final cal = a.calcularCalificacionFinalCalculada();
+      if (cal != null) (res[a.matricula]!['cals'] as List<double>).add(cal);
+      res[a.matricula]!['faltas'] = (res[a.matricula]!['faltas'] as int) + a.totalFaltas;
+      res[a.matricula]!['materias'] = (res[a.matricula]!['materias'] as int) + 1;
+    }
+    return res;
+  }
+
   List<Alumno> _getAlumnosOrdenados() {
-    final alumnos = List<Alumno>.from(widget.grupo.alumnos);
-    
+    final resumen = _buildResumenAlumnos();
+    // Un Alumno representante por matrícula (primero en aparecer)
+    final alumnos = resumen.values.map((r) => r['alumno'] as Alumno).toList();
+
+    double _prom(String matricula) {
+      final cals = resumen[matricula]!['cals'] as List<double>;
+      return cals.isEmpty ? 0.0 : cals.reduce((a, b) => a + b) / cals.length;
+    }
+
     switch (_ordenamiento) {
       case 'calificacion':
-        alumnos.sort((a, b) {
-          final calA = a.calcularCalificacionFinalCalculada() ?? 0.0;
-          final calB = b.calcularCalificacionFinalCalculada() ?? 0.0;
-          return calB.compareTo(calA);
-        });
+        alumnos.sort((a, b) => _prom(b.matricula).compareTo(_prom(a.matricula)));
         break;
       case 'nombre':
         alumnos.sort((a, b) => a.nombre.compareTo(b.nombre));
@@ -909,11 +1089,46 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
         alumnos.sort((a, b) => a.matricula.compareTo(b.matricula));
         break;
       case 'faltas':
-        alumnos.sort((a, b) => b.totalFaltas.compareTo(a.totalFaltas));
+        alumnos.sort((a, b) {
+          final fa = resumen[a.matricula]!['faltas'] as int;
+          final fb = resumen[b.matricula]!['faltas'] as int;
+          return fb.compareTo(fa);
+        });
         break;
     }
-    
+
     return alumnos;
+  }
+
+  Widget _buildMetricRow(String label, String value, IconData icon, Color color) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(children: [
+        Icon(icon, size: 18, color: color),
+        const SizedBox(width: 8),
+        Expanded(child: Text(label, style: const TextStyle(fontSize: 13))),
+        Text(value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: color)),
+      ]),
+    );
+  }
+
+  String _interpretarCorrelacion(double r) {
+    if (r < -0.7) return 'alta negativa';
+    if (r < -0.3) return 'moderada negativa';
+    if (r < 0.3) return 'baja';
+    if (r < 0.7) return 'moderada positiva';
+    return 'alta positiva';
+  }
+
+  Color _colorRango(String rango) {
+    switch (rango) {
+      case '9–10': return Colors.green;
+      case '8–9': return Colors.lightGreen;
+      case '7–8': return Colors.orange;
+      case '5–7': return Colors.deepOrange;
+      case '0–5': return Colors.red;
+      default: return Colors.grey;
+    }
   }
 
   Color _getColorPromedio(double promedio) {
@@ -939,6 +1154,34 @@ class _GroupDetailScreenState extends State<GroupDetailScreen> with TickerProvid
       case 'exportar_alumnos':
         await _exportarAlumnosPdf();
         break;
+      case 'exportar_excel':
+        await _exportarExcel();
+        break;
+    }
+  }
+
+  Future<void> _exportarExcel() async {
+    try {
+      final nombreArchivo =
+          'grupo_${widget.grupo.nombre}_${widget.grupo.nombreMateria.replaceAll(' ', '_')}';
+      final path = await ExcelExportService.exportarAlumnos(
+        alumnos: widget.grupo.alumnos,
+        nombreArchivo: nombreArchivo,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(path != null ? 'Excel guardado en: $path' : 'Error al exportar Excel'),
+            backgroundColor: path != null ? Colors.green : Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
     }
   }
 

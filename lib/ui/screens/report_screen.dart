@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
-import 'dart:io';
+import 'dart:io' show File, Platform, Process;
 import 'student_profile_screen.dart';
 import '../../providers/data_provider.dart';
 import '../../providers/config_provider.dart';
+import '../../models/alumno.dart';
 import '../../models/reporte.dart';
 import '../../services/pdf_service.dart';
 
@@ -20,6 +21,8 @@ class _ReportScreenState extends State<ReportScreen> {
   String _tipoReporte = 'individual';
   bool _generandoReporte = false;
   String? _carpetaDestino;
+  final Set<String> _alumnosSeleccionados = {};
+  final Set<String> _gruposSeleccionados = {};
 
   @override
   Widget build(BuildContext context) {
@@ -114,6 +117,8 @@ class _ReportScreenState extends State<ReportScreen> {
                     onSelectionChanged: (Set<String> newSelection) {
                       setState(() {
                         _tipoReporte = newSelection.first;
+                        _alumnosSeleccionados.clear();
+                        _gruposSeleccionados.clear();
                       });
                     },
                   ),
@@ -163,6 +168,8 @@ class _ReportScreenState extends State<ReportScreen> {
                     onChanged: (value) {
                       setState(() {
                         _filtroSeleccionado = value!;
+                        _alumnosSeleccionados.clear();
+                        _gruposSeleccionados.clear();
                       });
                     },
                   ),
@@ -254,7 +261,7 @@ class _ReportScreenState extends State<ReportScreen> {
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
                       : const Icon(Icons.picture_as_pdf),
-                  label: Text(_generandoReporte ? 'Generando...' : 'Generar PDF'),
+                  label: Text(_generandoReporte ? 'Generando...' : _getBotonLabel(datosFiltrados)),
                 ),
               ],
             ),
@@ -308,145 +315,473 @@ class _ReportScreenState extends State<ReportScreen> {
     );
   }
 
-  Widget _buildListaAlumnos(List<dynamic> alumnos) {
-    if (alumnos.isEmpty) {
-      return const Text('No hay alumnos que cumplan con los filtros seleccionados');
+  Widget _buildListaAlumnos(List<dynamic> alumnosRaw) {
+    if (alumnosRaw.isEmpty) {
+      return const Text('No hay alumnos con los filtros aplicados');
     }
+
+    final Map<String, List<Alumno>> porMatricula = {};
+    for (final a in alumnosRaw.cast<Alumno>()) {
+      porMatricula.putIfAbsent(a.matricula, () => []).add(a);
+    }
+    final entradas = porMatricula.entries.toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Row(
+          children: [
+            Text(
+              '${entradas.length} alumnos únicos',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            if (_alumnosSeleccionados.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '${_alumnosSeleccionados.length} seleccionados',
+                  style: const TextStyle(color: Colors.white, fontSize: 11),
+                ),
+              ),
+            ],
+            const Spacer(),
+            TextButton.icon(
+              onPressed: () => setState(() {
+                _alumnosSeleccionados.clear();
+                _alumnosSeleccionados.addAll(porMatricula.keys);
+              }),
+              icon: const Icon(Icons.check_box, size: 16),
+              label: const Text('Todos', style: TextStyle(fontSize: 12)),
+            ),
+            TextButton.icon(
+              onPressed: () => setState(() => _alumnosSeleccionados.clear()),
+              icon: const Icon(Icons.check_box_outline_blank, size: 16),
+              label: const Text('Ninguno', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
         Text(
-          'Alumnos a incluir (${alumnos.length}):',
-          style: const TextStyle(fontWeight: FontWeight.bold),
+          'Sin selección = genera todos. Toca la matrícula para ver el perfil.',
+          style: TextStyle(fontSize: 11, color: Colors.grey[500]),
         ),
         const SizedBox(height: 8),
         Container(
-          constraints: const BoxConstraints(maxHeight: 300),
+          constraints: const BoxConstraints(maxHeight: 400),
           child: ListView.builder(
             shrinkWrap: true,
-            itemCount: alumnos.length > 20 ? 20 : alumnos.length,
+            itemCount: entradas.length,
             itemBuilder: (context, index) {
-              final alumno = alumnos[index];
-              return ListTile(
-                dense: true,
-                leading: CircleAvatar(
-                  radius: 16,
-                  backgroundColor: alumno.aprueba() ? Colors.green : Colors.red,
-                  child: Text(
-                    '${index + 1}',
-                    style: const TextStyle(color: Colors.white, fontSize: 12),
-                  ),
-                ),
-                title: Text(alumno.nombre),
-                subtitle: Row(
-                  children: [
-                    InkWell(
-                      onTap: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(
-                            builder: (context) => StudentProfileScreen(
-                              matricula: alumno.matricula,
-                            ),
-                          ),
-                        );
-                      },
-                      child: Text(
-                        alumno.matricula,
-                        style: const TextStyle(
-                          color: Colors.blue,
-                          decoration: TextDecoration.underline,
+              final matricula = entradas[index].key;
+              final materias = entradas[index].value;
+              final nombre = materias.first.nombre;
+              final carrera = materias.first.carrera;
+              final grupo = materias.first.grupo;
+              final cals = materias
+                  .map((a) => a.calcularCalificacionFinalCalculada())
+                  .whereType<double>()
+                  .toList();
+              final promedio = cals.isEmpty
+                  ? null
+                  : cals.reduce((a, b) => a + b) / cals.length;
+              final aprobadas = cals.where((c) => c >= 7.0).length;
+              final totalFaltas = materias.fold<int>(0, (s, a) => s + a.totalFaltas);
+              final isSelected = _alumnosSeleccionados.contains(matricula);
+
+              return InkWell(
+                onTap: () => setState(() {
+                  if (isSelected) {
+                    _alumnosSeleccionados.remove(matricula);
+                  } else {
+                    _alumnosSeleccionados.add(matricula);
+                  }
+                }),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                      vertical: 4, horizontal: 4),
+                  child: Row(
+                    children: [
+                      Checkbox(
+                        value: isSelected,
+                        onChanged: (val) => setState(() {
+                          if (val == true) {
+                            _alumnosSeleccionados.add(matricula);
+                          } else {
+                            _alumnosSeleccionados.remove(matricula);
+                          }
+                        }),
+                      ),
+                      CircleAvatar(
+                        radius: 16,
+                        backgroundColor:
+                            (promedio ?? 0) >= 7.0
+                                ? Colors.green
+                                : Colors.red,
+                        child: Text(
+                          promedio?.toStringAsFixed(1) ?? '?',
+                          style: const TextStyle(
+                              color: Colors.white, fontSize: 9),
                         ),
                       ),
-                    ),
-                    Text(' - ${alumno.nombreMateria}'),
-                  ],
-                ),
-                trailing: Text(
-                  alumno.calcularCalificacionFinalCalculada()?.toStringAsFixed(2) ?? 'S/C',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: alumno.aprueba() ? Colors.green : Colors.red,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(nombre,
+                                style:
+                                    const TextStyle(fontSize: 13)),
+                            Row(children: [
+                              GestureDetector(
+                                onTap: () => Navigator.of(context)
+                                    .push(MaterialPageRoute(
+                                  builder: (_) => StudentProfileScreen(
+                                      matricula: matricula),
+                                )),
+                                child: Text(
+                                  matricula,
+                                  style: const TextStyle(
+                                    color: Colors.blue,
+                                    decoration:
+                                        TextDecoration.underline,
+                                    fontSize: 11,
+                                  ),
+                                ),
+                              ),
+                              Expanded(
+                                child: Text(
+                                  '  •  $grupo  •  $aprobadas/${materias.length} apr  •  $totalFaltas faltas',
+                                  style: TextStyle(
+                                      fontSize: 11,
+                                      color: Colors.grey[600]),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ]),
+                          ],
+                        ),
+                      ),
+                      Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            promedio?.toStringAsFixed(2) ?? 'S/C',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                              color: (promedio ?? 0) >= 7.0
+                                  ? Colors.green
+                                  : Colors.red,
+                            ),
+                          ),
+                          Text(
+                            carrera.length > 14
+                                ? '${carrera.substring(0, 14)}…'
+                                : carrera,
+                            style: TextStyle(
+                                fontSize: 9, color: Colors.grey[500]),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
               );
             },
           ),
         ),
-        if (alumnos.length > 20)
-          Text(
-            '... y ${alumnos.length - 20} más',
-            style: TextStyle(color: Colors.grey[600]),
-          ),
       ],
     );
   }
 
   Widget _buildListaGrupos(List<dynamic> grupos) {
     if (grupos.isEmpty) {
-      return const Text('No hay grupos que cumplan con los filtros seleccionados');
+      return const Text('No hay grupos con los filtros aplicados');
     }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        Row(
+          children: [
+            Text(
+              '${grupos.length} grupos',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            if (_gruposSeleccionados.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primary,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '${_gruposSeleccionados.length} seleccionados',
+                  style: const TextStyle(color: Colors.white, fontSize: 11),
+                ),
+              ),
+            ],
+            const Spacer(),
+            TextButton.icon(
+              onPressed: () => setState(() {
+                _gruposSeleccionados.clear();
+                _gruposSeleccionados
+                    .addAll(grupos.map((g) => g.nombre as String));
+              }),
+              icon: const Icon(Icons.check_box, size: 16),
+              label: const Text('Todos', style: TextStyle(fontSize: 12)),
+            ),
+            TextButton.icon(
+              onPressed: () =>
+                  setState(() => _gruposSeleccionados.clear()),
+              icon: const Icon(Icons.check_box_outline_blank, size: 16),
+              label: const Text('Ninguno', style: TextStyle(fontSize: 12)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 2),
         Text(
-          'Grupos a incluir (${grupos.length}):',
-          style: const TextStyle(fontWeight: FontWeight.bold),
+          'Sin selección = genera todos.',
+          style: TextStyle(fontSize: 11, color: Colors.grey[500]),
         ),
         const SizedBox(height: 8),
-        ...grupos.map((grupo) => ListTile(
-          dense: true,
-          leading: CircleAvatar(
-            radius: 16,
-            backgroundColor: grupo.porcentajeAprobados() >= 70 ? Colors.green : Colors.orange,
-            child: Text(
-              '${grupo.porcentajeAprobados().toStringAsFixed(0)}%',
-              style: const TextStyle(color: Colors.white, fontSize: 10),
+        ...grupos.map((grupo) {
+          final key = grupo.nombre as String;
+          final isSelected = _gruposSeleccionados.contains(key);
+          final pct = grupo.porcentajeAprobados() as double;
+
+          return InkWell(
+            onTap: () => setState(() {
+              if (isSelected) {
+                _gruposSeleccionados.remove(key);
+              } else {
+                _gruposSeleccionados.add(key);
+              }
+            }),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+              child: Row(
+                children: [
+                  Checkbox(
+                    value: isSelected,
+                    onChanged: (val) => setState(() {
+                      if (val == true) {
+                        _gruposSeleccionados.add(key);
+                      } else {
+                        _gruposSeleccionados.remove(key);
+                      }
+                    }),
+                  ),
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: pct >= 70
+                        ? Colors.green
+                        : pct >= 50
+                            ? Colors.orange
+                            : Colors.red,
+                    child: Text(
+                      '${pct.toStringAsFixed(0)}%',
+                      style: const TextStyle(
+                          color: Colors.white, fontSize: 9),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                            '${grupo.nombre} — ${grupo.nombreMateria}',
+                            style: const TextStyle(fontSize: 13)),
+                        Text(
+                          'Prof: ${grupo.nombreProfesor}  •  ${grupo.totalAlumnos} alumnos',
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.grey[600]),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Text(
+                    (grupo.promedioGeneral as double).toStringAsFixed(2),
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                      color: (grupo.promedioGeneral as double) >= 7.0
+                          ? Colors.green
+                          : Colors.red,
+                    ),
+                  ),
+                ],
+              ),
             ),
-          ),
-          title: Text('${grupo.nombre} - ${grupo.nombreMateria}'),
-          subtitle: Text('Profesor: ${grupo.nombreProfesor}'),
-          trailing: Text(
-            '${grupo.totalAlumnos} alumnos\nPromedio: ${grupo.promedioGeneral.toStringAsFixed(2)}',
-            textAlign: TextAlign.end,
-            style: const TextStyle(fontSize: 12),
-          ),
-        )),
+          );
+        }),
       ],
     );
   }
 
   Widget _buildResumenGeneral(DataProvider dataProvider) {
+    final estadCarrera = dataProvider.estadisticasPorCarrera;
+    final materiasDif = dataProvider.materiasPorDificultad;
+    final pctAprobados = dataProvider.totalAlumnos > 0
+        ? dataProvider.totalAprobados / dataProvider.totalAlumnos * 100
+        : 0.0;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const Text(
-          'Reporte General Institucional:',
-          style: TextStyle(fontWeight: FontWeight.bold),
+          'Resumen Institucional:',
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
         ),
+        const SizedBox(height: 12),
+
+        // Row 1: totals
+        Row(children: [
+          _buildMiniStatCard('Alumnos', '${dataProvider.totalAlumnos}', Icons.people, Colors.blue),
+          const SizedBox(width: 8),
+          _buildMiniStatCard('Grupos', '${dataProvider.totalGrupos}', Icons.groups, Colors.purple),
+          const SizedBox(width: 8),
+          _buildMiniStatCard('Materias', '${dataProvider.totalMaterias}', Icons.book, Colors.teal),
+          const SizedBox(width: 8),
+          _buildMiniStatCard('Promedio', dataProvider.promedioGeneral.toStringAsFixed(2), Icons.grade,
+              dataProvider.promedioGeneral >= 7.0 ? Colors.green : Colors.red),
+        ]),
         const SizedBox(height: 8),
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            border: Border.all(color: Colors.grey[300]!),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Total de registros: ${dataProvider.totalAlumnos}'),
-              Text('Total de grupos: ${dataProvider.totalGrupos}'),
-              Text('Total de materias: ${dataProvider.totalMaterias}'),
-              Text('Promedio institucional: ${dataProvider.promedioGeneral.toStringAsFixed(2)}'),
-              Text('Aprobados: ${dataProvider.totalAprobados}'),
-              Text('Reprobados: ${dataProvider.totalReprobados}'),
-              if (dataProvider.totalSinCalificar > 0)
-                Text('Sin calificar: ${dataProvider.totalSinCalificar}'),
-            ],
+
+        // Row 2: risk
+        Row(children: [
+          _buildMiniStatCard('Aprobados', '${dataProvider.totalAprobados}', Icons.check_circle, Colors.green),
+          const SizedBox(width: 8),
+          _buildMiniStatCard('Reprobados', '${dataProvider.totalReprobados}', Icons.cancel, Colors.red),
+          const SizedBox(width: 8),
+          _buildMiniStatCard('En riesgo', '${dataProvider.alumnosEnRiesgoGlobal.length}', Icons.warning, Colors.orange),
+          const SizedBox(width: 8),
+          _buildMiniStatCard('Extraordinario', '${dataProvider.totalNecesitanExtraordinario}', Icons.school, Colors.deepPurple),
+        ]),
+
+        const SizedBox(height: 16),
+
+        // Overall approval bar
+        Row(
+          children: [
+            const Text('Índice de aprobación global:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+            const SizedBox(width: 8),
+            Text('${pctAprobados.toStringAsFixed(1)}%',
+                style: TextStyle(fontWeight: FontWeight.bold, color: pctAprobados >= 70 ? Colors.green : Colors.orange)),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: pctAprobados / 100,
+            minHeight: 10,
+            color: pctAprobados >= 70 ? Colors.green : pctAprobados >= 50 ? Colors.orange : Colors.red,
+            backgroundColor: Colors.grey[200],
           ),
         ),
+
+        if (estadCarrera.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          const Text('Por carrera:', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 8),
+          ...estadCarrera.entries.take(8).map((e) {
+            final pct = e.value['porcentajeAprobados'] as double;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(e.key, style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis),
+                      ),
+                      Text(
+                        '${e.value['totalAlumnos']} alumnos  •  ${(e.value['promedio'] as double).toStringAsFixed(2)}  •  ${pct.toStringAsFixed(1)}% apr.',
+                        style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(3),
+                    child: LinearProgressIndicator(
+                      value: pct / 100,
+                      minHeight: 7,
+                      color: pct >= 70 ? Colors.green : pct >= 50 ? Colors.orange : Colors.red,
+                      backgroundColor: Colors.grey[200],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+
+        if (materiasDif.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          const Text('Materias con menor promedio:', style: TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 6),
+          ...materiasDif.take(6).map((m) {
+            final prom = m['promedio'] as double;
+            return ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(
+                radius: 18,
+                backgroundColor: prom >= 7.0 ? Colors.green[100] : Colors.red[100],
+                child: Text(
+                  prom.toStringAsFixed(1),
+                  style: TextStyle(
+                    fontSize: 10, fontWeight: FontWeight.bold,
+                    color: prom >= 7.0 ? Colors.green[800] : Colors.red[800],
+                  ),
+                ),
+              ),
+              title: Text(m['materia'] as String, style: const TextStyle(fontSize: 13)),
+              trailing: Text('${m['total']} alumnos', style: TextStyle(fontSize: 11, color: Colors.grey[600])),
+            );
+          }),
+        ],
       ],
+    );
+  }
+
+  Widget _buildMiniStatCard(String label, String value, IconData icon, Color color) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: color.withOpacity(0.3)),
+        ),
+        child: Row(
+          children: [
+            Icon(icon, color: color, size: 18),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
+                  Text(label, style: const TextStyle(fontSize: 10, color: Colors.grey)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -497,11 +832,40 @@ class _ReportScreenState extends State<ReportScreen> {
 
   String _getConteoRegistros(Map<String, List<dynamic>> datos) {
     if (_tipoReporte == 'individual') {
-      return '${datos['alumnos']?.length ?? 0} alumnos';
+      final alumnos = datos['alumnos'] ?? [];
+      final totalUnicos =
+          alumnos.cast<Alumno>().map((a) => a.matricula).toSet().length;
+      if (_alumnosSeleccionados.isNotEmpty) {
+        return '${_alumnosSeleccionados.length} de $totalUnicos alumnos seleccionados';
+      }
+      return '$totalUnicos alumnos únicos (se generarán todos)';
     } else if (_tipoReporte == 'grupo') {
-      return '${datos['grupos']?.length ?? 0} grupos';
+      final total = datos['grupos']?.length ?? 0;
+      if (_gruposSeleccionados.isNotEmpty) {
+        return '${_gruposSeleccionados.length} de $total grupos seleccionados';
+      }
+      return '$total grupos (se generarán todos)';
     }
-    return '1 reporte general';
+    return '1 reporte general institucional';
+  }
+
+  String _getBotonLabel(Map<String, List<dynamic>> datos) {
+    if (_tipoReporte == 'individual') {
+      final count = _alumnosSeleccionados.isNotEmpty
+          ? _alumnosSeleccionados.length
+          : (datos['alumnos'] ?? [])
+              .cast<Alumno>()
+              .map((a) => a.matricula)
+              .toSet()
+              .length;
+      return 'Generar $count PDF(s)';
+    } else if (_tipoReporte == 'grupo') {
+      final count = _gruposSeleccionados.isNotEmpty
+          ? _gruposSeleccionados.length
+          : datos['grupos']?.length ?? 0;
+      return 'Generar $count PDF(s)';
+    }
+    return 'Generar PDF';
   }
 
   IconData _getTipoReporteIcon() {
@@ -586,12 +950,7 @@ class _ReportScreenState extends State<ReportScreen> {
       }
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Reportes generados exitosamente'),
-            backgroundColor: Colors.green,
-          ),
-        );
+        _ofrecerAbrirCarpeta(_carpetaDestino!);
       }
     } catch (e) {
       if (mounted) {
@@ -609,31 +968,67 @@ class _ReportScreenState extends State<ReportScreen> {
     }
   }
 
-  Future<void> _generarReportesIndividuales(List<dynamic> alumnos, ConfigProvider configProvider) async {
-    for (int i = 0; i < alumnos.length; i++) {
-      final alumno = alumnos[i];
-      final reporte = ReporteAlumno(
-        alumno: alumno,
-        fechaGeneracion: DateTime.now(),
-      );
+  void _ofrecerAbrirCarpeta(String carpeta) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Reporte(s) generado(s) exitosamente'),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 8),
+        action: SnackBarAction(
+          label: 'Abrir carpeta',
+          textColor: Colors.white,
+          onPressed: () {
+              if (Platform.isWindows) {
+                Process.run('explorer', [carpeta]);
+              } else if (Platform.isLinux) {
+                Process.run('xdg-open', [carpeta]);
+              } else {
+                Process.run('open', [carpeta]);
+              }
+            },
+        ),
+      ),
+    );
+  }
 
-      final pdfBytes = await PdfService.generarReporteAlumno(
-        reporte: reporte,
+  Future<void> _generarReportesIndividuales(
+      List<dynamic> alumnosRaw, ConfigProvider configProvider) async {
+    final Map<String, List<Alumno>> porMatricula = {};
+    for (final a in alumnosRaw.cast<Alumno>()) {
+      porMatricula.putIfAbsent(a.matricula, () => []).add(a);
+    }
+
+    final matriculasAGenerar = _alumnosSeleccionados.isNotEmpty
+        ? porMatricula.keys
+            .where((m) => _alumnosSeleccionados.contains(m))
+            .toList()
+        : porMatricula.keys.toList();
+
+    for (final matricula in matriculasAGenerar) {
+      final materias = porMatricula[matricula]!;
+      final pdfBytes = await PdfService.generarReporteAlumnoCompleto(
+        materias: materias,
         logoPath: configProvider.logoPath,
         nombreInstitucion: configProvider.nombreInstitucion,
         incluirFirma: configProvider.incluirFirmaEnReportes,
         textoFirma: configProvider.textoFirma,
       );
-
-      final nombreArchivo = 'reporte_${alumno.matricula}_${alumno.nombre.replaceAll(' ', '_')}.pdf';
-      final rutaCompleta = '$_carpetaDestino/$nombreArchivo';
-      final file = File(rutaCompleta);
-      await file.writeAsBytes(pdfBytes);
+      final nombre = materias.first.nombre.replaceAll(' ', '_');
+      final nombreArchivo = 'reporte_${matricula}_$nombre.pdf';
+      await File('$_carpetaDestino/$nombreArchivo').writeAsBytes(pdfBytes);
     }
   }
 
-  Future<void> _generarReportesGrupo(List<dynamic> grupos, ConfigProvider configProvider) async {
-    for (final grupo in grupos) {
+  Future<void> _generarReportesGrupo(
+      List<dynamic> grupos, ConfigProvider configProvider) async {
+    final gruposAGenerar = _gruposSeleccionados.isNotEmpty
+        ? grupos
+            .where((g) => _gruposSeleccionados.contains(g.nombre as String))
+            .toList()
+        : grupos;
+
+    for (final grupo in gruposAGenerar) {
       final reporte = ReporteGrupo(
         grupo: grupo,
         fechaGeneracion: DateTime.now(),
@@ -655,7 +1050,17 @@ class _ReportScreenState extends State<ReportScreen> {
   }
 
   Future<void> _generarReporteGeneral(DataProvider dataProvider, ConfigProvider configProvider) async {
-    // TODO: Implementar reporte general
-    throw UnimplementedError('Reporte general en desarrollo');
+    final pdfBytes = await PdfService.generarReporteGeneral(
+      alumnos: dataProvider.alumnos,
+      grupos: dataProvider.grupos,
+      estadisticasPorCarrera: dataProvider.estadisticasPorCarrera,
+      logoPath: configProvider.logoPath,
+      nombreInstitucion: configProvider.nombreInstitucion,
+      incluirFirma: configProvider.incluirFirmaEnReportes,
+      textoFirma: configProvider.textoFirma,
+    );
+    final nombreArchivo = 'reporte_general_${DateTime.now().millisecondsSinceEpoch}.pdf';
+    final rutaCompleta = '$_carpetaDestino/$nombreArchivo';
+    await File(rutaCompleta).writeAsBytes(pdfBytes);
   }
 }

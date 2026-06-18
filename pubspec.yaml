@@ -59,6 +59,8 @@ dependencies:
   intl: ^0.19.0
   collection: ^1.18.0
   shared_preferences: ^2.3.4
+  spreadsheet_decoder: ^2.3.0
+  excel2003: ^1.0.0
 
 dev_dependencies:
   flutter_test:

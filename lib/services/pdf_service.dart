@@ -607,11 +607,726 @@ class PdfService {
 
   static int _getFaltas(Alumno alumno, int numero) {
     switch (numero) {
-      case 1: return alumno.faltasP1 ?? 0;
-      case 2: return alumno.faltasP2 ?? 0;
-      case 3: return alumno.faltasP3 ?? 0;
+      case 1: return alumno.faltasP1;
+      case 2: return alumno.faltasP2;
+      case 3: return alumno.faltasP3;
       default: return 0;
     }
+  }
+
+  /// Genera un reporte general institucional (multi-página)
+  static Future<Uint8List> generarReporteGeneral({
+    required List<Alumno> alumnos,
+    required List<Grupo> grupos,
+    required Map<String, Map<String, dynamic>> estadisticasPorCarrera,
+    String? logoPath,
+    String nombreInstitucion = 'Universidad Politécnica de Querétaro',
+    bool incluirFirma = false,
+    String textoFirma = '',
+  }) async {
+    final font = await PdfGoogleFonts.notoSansRegular();
+    final fontBold = await PdfGoogleFonts.notoSansBold();
+
+    pw.ImageProvider? logo;
+    if (logoPath != null && File(logoPath).existsSync()) {
+      try {
+        logo = pw.MemoryImage(await File(logoPath).readAsBytes());
+      } catch (_) {}
+    }
+
+    // Compute global stats
+    final Map<String, List<double>> calsPorMatricula = {};
+    for (final a in alumnos) {
+      final cal = a.calcularCalificacionFinalCalculada();
+      if (cal != null) calsPorMatricula.putIfAbsent(a.matricula, () => []).add(cal);
+    }
+    final totalAlumnos = alumnos.map((a) => a.matricula).toSet().length;
+    int aprobados = 0, reprobados = 0;
+    double sumaPromedios = 0.0;
+    for (final cals in calsPorMatricula.values) {
+      final p = cals.reduce((a, b) => a + b) / cals.length;
+      sumaPromedios += p;
+      if (p >= 7.0) aprobados++; else reprobados++;
+    }
+    final promedioGeneral = calsPorMatricula.isEmpty ? 0.0 : sumaPromedios / calsPorMatricula.length;
+    final sinCalificar = totalAlumnos - calsPorMatricula.length;
+    final totalMaterias = alumnos.map((a) => a.nombreMateria).toSet().length;
+
+    // Subject difficulty
+    final Map<String, List<double>> calsPorMateria = {};
+    for (final a in alumnos) {
+      final cal = a.calcularCalificacionFinalCalculada();
+      if (cal != null) calsPorMateria.putIfAbsent(a.nombreMateria, () => []).add(cal);
+    }
+    final materiasDif = calsPorMateria.entries.map((e) {
+      final p = e.value.reduce((a, b) => a + b) / e.value.length;
+      return <String, dynamic>{'materia': e.key, 'promedio': p, 'total': e.value.length};
+    }).toList()
+      ..sort((a, b) => (a['promedio'] as double).compareTo(b['promedio'] as double));
+
+    // At-risk (deduplicated)
+    final riesgo = alumnos.where((a) => a.estaEnRiesgo).map((a) => a.matricula).toSet().length;
+
+    // Gender distribution (one record per student)
+    final Map<String, String> generosPorMatricula = {};
+    for (final a in alumnos) {
+      generosPorMatricula[a.matricula] = a.genero;
+    }
+    final totalMujeres = generosPorMatricula.values.where((g) => g == 'F').length;
+    final totalHombres = generosPorMatricula.values.where((g) => g == 'M').length;
+
+    // Grade range distribution (per student average)
+    final Map<String, int> distribucion = {
+      '0-5': 0, '5-7': 0, '7-8': 0, '8-9': 0, '9-10': 0, 'S/C': 0,
+    };
+    for (final cals in calsPorMatricula.values) {
+      final p = cals.reduce((a, b) => a + b) / cals.length;
+      if (p < 5.0) distribucion['0-5'] = (distribucion['0-5'] ?? 0) + 1;
+      else if (p < 7.0) distribucion['5-7'] = (distribucion['5-7'] ?? 0) + 1;
+      else if (p < 8.0) distribucion['7-8'] = (distribucion['7-8'] ?? 0) + 1;
+      else if (p < 9.0) distribucion['8-9'] = (distribucion['8-9'] ?? 0) + 1;
+      else distribucion['9-10'] = (distribucion['9-10'] ?? 0) + 1;
+    }
+    distribucion['S/C'] = sinCalificar;
+
+    // Generation breakdown
+    final Map<String, Map<String, dynamic>> estadPorGen = {};
+    for (final a in alumnos) {
+      final gen = a.generacion ?? 'Sin generación';
+      estadPorGen.putIfAbsent(gen, () => {'mats': <String>{}, 'cals': <double>[], 'riesgo': <String>{}});
+      (estadPorGen[gen]!['mats'] as Set<String>).add(a.matricula);
+      final cal = a.calcularCalificacionFinalCalculada();
+      if (cal != null) (estadPorGen[gen]!['cals'] as List<double>).add(cal);
+      if (a.estaEnRiesgo) (estadPorGen[gen]!['riesgo'] as Set<String>).add(a.matricula);
+    }
+
+    // At-risk students list (first record per matricula)
+    final Map<String, Alumno> primeraPorMatricula = {};
+    for (final a in alumnos) {
+      primeraPorMatricula.putIfAbsent(a.matricula, () => a);
+    }
+    final atRiskMatriculas = alumnos.where((a) => a.estaEnRiesgo).map((a) => a.matricula).toSet();
+    final atRiskAlumnos = atRiskMatriculas.map((m) => primeraPorMatricula[m]!).toList()
+      ..sort((a, b) => a.nombre.compareTo(b.nombre));
+
+    final pdf = pw.Document();
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(32),
+        header: (ctx) => pw.Column(children: [
+          _buildHeader(nombreInstitucion: nombreInstitucion, logo: logo, font: font, fontBold: fontBold),
+          pw.SizedBox(height: 8),
+          pw.Divider(),
+        ]),
+        footer: (ctx) => _buildFooter(fechaGeneracion: DateTime.now(), incluirFirma: incluirFirma, textoFirma: textoFirma, font: font),
+        build: (ctx) => [
+          pw.Center(child: pw.Text('REPORTE GENERAL INSTITUCIONAL', style: pw.TextStyle(font: fontBold, fontSize: 16))),
+          pw.SizedBox(height: 16),
+
+          // Global stats box
+          pw.Container(
+            padding: const pw.EdgeInsets.all(10),
+            decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColors.grey400), borderRadius: pw.BorderRadius.circular(4)),
+            child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+              pw.Text('ESTADÍSTICAS GENERALES', style: pw.TextStyle(font: fontBold, fontSize: 12)),
+              pw.SizedBox(height: 8),
+              pw.Row(children: [
+                pw.Expanded(child: pw.Text('Total alumnos únicos: $totalAlumnos', style: pw.TextStyle(font: font, fontSize: 10))),
+                pw.Expanded(child: pw.Text('Total grupos: ${grupos.length}', style: pw.TextStyle(font: font, fontSize: 10))),
+                pw.Expanded(child: pw.Text('Total materias: $totalMaterias', style: pw.TextStyle(font: font, fontSize: 10))),
+              ]),
+              pw.SizedBox(height: 4),
+              pw.Row(children: [
+                pw.Expanded(child: pw.Text('Promedio general: ${promedioGeneral.toStringAsFixed(2)}', style: pw.TextStyle(font: fontBold, fontSize: 10))),
+                pw.Expanded(child: pw.Text('Aprobados: $aprobados (${totalAlumnos > 0 ? (aprobados / totalAlumnos * 100).toStringAsFixed(1) : 0}%)', style: pw.TextStyle(font: font, fontSize: 10, color: PdfColors.green700))),
+                pw.Expanded(child: pw.Text('Reprobados: $reprobados (${totalAlumnos > 0 ? (reprobados / totalAlumnos * 100).toStringAsFixed(1) : 0}%)', style: pw.TextStyle(font: font, fontSize: 10, color: PdfColors.red))),
+              ]),
+              pw.SizedBox(height: 4),
+              pw.Row(children: [
+                pw.Expanded(child: pw.Text('Sin calificar: $sinCalificar', style: pw.TextStyle(font: font, fontSize: 10))),
+                pw.Expanded(child: pw.Text('Alumnos en riesgo: $riesgo', style: pw.TextStyle(font: fontBold, fontSize: 10, color: PdfColors.orange700))),
+                pw.Expanded(child: pw.Text('Mujeres: $totalMujeres  |  Hombres: $totalHombres', style: pw.TextStyle(font: font, fontSize: 10))),
+              ]),
+            ]),
+          ),
+
+          pw.SizedBox(height: 16),
+
+          // Carrera table
+          pw.Text('DESGLOSE POR CARRERA', style: pw.TextStyle(font: fontBold, fontSize: 12)),
+          pw.SizedBox(height: 6),
+          pw.Table(
+            border: pw.TableBorder.all(color: PdfColors.grey300),
+            columnWidths: {
+              0: const pw.FlexColumnWidth(3.5),
+              1: const pw.FlexColumnWidth(1.2),
+              2: const pw.FlexColumnWidth(1.2),
+              3: const pw.FlexColumnWidth(1.6),
+              4: const pw.FlexColumnWidth(1.2),
+            },
+            children: [
+              pw.TableRow(
+                decoration: const pw.BoxDecoration(color: PdfColors.grey200),
+                children: [
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Carrera', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Alumnos', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Promedio', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Aprobados', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Reprobados', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                ],
+              ),
+              ...estadisticasPorCarrera.entries.map((e) {
+                final s = e.value;
+                final pct = (s['porcentajeAprobados'] as double).toStringAsFixed(1);
+                return pw.TableRow(children: [
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(e.key, style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('${s['totalAlumnos']}', style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text((s['promedio'] as double).toStringAsFixed(2), style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('${s['aprobados']} ($pct%)', style: pw.TextStyle(font: font, fontSize: 8, color: PdfColors.green700))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('${s['reprobados']}', style: pw.TextStyle(font: font, fontSize: 8, color: PdfColors.red))),
+                ]);
+              }),
+            ],
+          ),
+
+          pw.SizedBox(height: 16),
+
+          // Subject difficulty table
+          pw.Text('MATERIAS POR DIFICULTAD (promedio más bajo primero)', style: pw.TextStyle(font: fontBold, fontSize: 12)),
+          pw.SizedBox(height: 6),
+          pw.Table(
+            border: pw.TableBorder.all(color: PdfColors.grey300),
+            columnWidths: {
+              0: const pw.FlexColumnWidth(0.5),
+              1: const pw.FlexColumnWidth(4),
+              2: const pw.FlexColumnWidth(1.5),
+              3: const pw.FlexColumnWidth(1.2),
+            },
+            children: [
+              pw.TableRow(
+                decoration: const pw.BoxDecoration(color: PdfColors.grey200),
+                children: [
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('#', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Materia', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Promedio', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Alumnos', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                ],
+              ),
+              ...materiasDif.take(20).toList().asMap().entries.map((e) {
+                final m = e.value;
+                final prom = m['promedio'] as double;
+                return pw.TableRow(children: [
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('${e.key + 1}', style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(m['materia'] as String, style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(prom.toStringAsFixed(2), style: pw.TextStyle(font: font, fontSize: 8, color: prom < 7.0 ? PdfColors.red : PdfColors.green700))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('${m['total']}', style: pw.TextStyle(font: font, fontSize: 8))),
+                ]);
+              }),
+            ],
+          ),
+
+          pw.SizedBox(height: 16),
+
+          // Grade distribution table
+          pw.Text('DISTRIBUCIÓN DE CALIFICACIONES (por alumno)', style: pw.TextStyle(font: fontBold, fontSize: 12)),
+          pw.SizedBox(height: 6),
+          pw.Table(
+            border: pw.TableBorder.all(color: PdfColors.grey300),
+            columnWidths: {
+              0: const pw.FlexColumnWidth(1.5),
+              1: const pw.FlexColumnWidth(1.5),
+              2: const pw.FlexColumnWidth(1.5),
+              3: const pw.FlexColumnWidth(1.5),
+              4: const pw.FlexColumnWidth(1.5),
+              5: const pw.FlexColumnWidth(1.5),
+              6: const pw.FlexColumnWidth(1.5),
+            },
+            children: [
+              pw.TableRow(
+                decoration: const pw.BoxDecoration(color: PdfColors.grey200),
+                children: ['Rango', '0-5', '5-7', '7-8', '8-9', '9-10', 'S/C'].map((h) =>
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(h, style: pw.TextStyle(font: fontBold, fontSize: 9)))).toList(),
+              ),
+              pw.TableRow(children: [
+                pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Alumnos', style: pw.TextStyle(font: font, fontSize: 9))),
+                ...['0-5', '5-7', '7-8', '8-9', '9-10', 'S/C'].map((r) {
+                  final count = distribucion[r] ?? 0;
+                  final pct = totalAlumnos > 0 ? (count / totalAlumnos * 100).toStringAsFixed(1) : '0.0';
+                  final color = (r == '0-5' || r == '5-7') ? PdfColors.red : r == 'S/C' ? PdfColors.grey600 : PdfColors.green700;
+                  return pw.Padding(
+                    padding: const pw.EdgeInsets.all(5),
+                    child: pw.Text('$count\n($pct%)', style: pw.TextStyle(font: font, fontSize: 8, color: color)),
+                  );
+                }),
+              ]),
+            ],
+          ),
+
+          if (estadPorGen.isNotEmpty) ...[
+            pw.SizedBox(height: 16),
+            pw.Text('DESGLOSE POR GENERACIÓN', style: pw.TextStyle(font: fontBold, fontSize: 12)),
+            pw.SizedBox(height: 6),
+            pw.Table(
+              border: pw.TableBorder.all(color: PdfColors.grey300),
+              columnWidths: {
+                0: const pw.FlexColumnWidth(2),
+                1: const pw.FlexColumnWidth(1.2),
+                2: const pw.FlexColumnWidth(1.5),
+                3: const pw.FlexColumnWidth(1.2),
+              },
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: PdfColors.grey200),
+                  children: [
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Generación', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Alumnos', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Promedio', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('En riesgo', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  ],
+                ),
+                ...estadPorGen.entries.map((e) {
+                  final totalGen = (e.value['mats'] as Set<String>).length;
+                  final calsGen = e.value['cals'] as List<double>;
+                  final promGen = calsGen.isEmpty ? null : calsGen.reduce((a, b) => a + b) / calsGen.length;
+                  final riesgoGen = (e.value['riesgo'] as Set<String>).length;
+                  return pw.TableRow(children: [
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(e.key, style: pw.TextStyle(font: font, fontSize: 8))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('$totalGen', style: pw.TextStyle(font: font, fontSize: 8))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(promGen?.toStringAsFixed(2) ?? 'S/C', style: pw.TextStyle(font: font, fontSize: 8, color: (promGen ?? 0) >= 7.0 ? PdfColors.green700 : PdfColors.red))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('$riesgoGen', style: pw.TextStyle(font: font, fontSize: 8, color: riesgoGen > 0 ? PdfColors.orange700 : PdfColors.black))),
+                  ]);
+                }),
+              ],
+            ),
+          ],
+
+          if (atRiskAlumnos.isNotEmpty) ...[
+            pw.SizedBox(height: 16),
+            pw.Text('ALUMNOS EN RIESGO ACADÉMICO (${atRiskAlumnos.length})', style: pw.TextStyle(font: fontBold, fontSize: 12, color: PdfColors.orange700)),
+            pw.SizedBox(height: 6),
+            pw.Table(
+              border: pw.TableBorder.all(color: PdfColors.grey300),
+              columnWidths: {
+                0: const pw.FlexColumnWidth(3),
+                1: const pw.FlexColumnWidth(2),
+                2: const pw.FlexColumnWidth(3),
+                3: const pw.FlexColumnWidth(1.5),
+                4: const pw.FlexColumnWidth(1.2),
+              },
+              children: [
+                pw.TableRow(
+                  decoration: const pw.BoxDecoration(color: PdfColors.orange50),
+                  children: [
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Nombre', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Matrícula', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Carrera', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Grupo', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                    pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('Faltas', style: pw.TextStyle(font: fontBold, fontSize: 9))),
+                  ],
+                ),
+                ...atRiskAlumnos.take(30).map((a) => pw.TableRow(children: [
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(a.nombre, style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(a.matricula, style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(a.carrera, style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text(a.grupo, style: pw.TextStyle(font: font, fontSize: 8))),
+                  pw.Padding(padding: const pw.EdgeInsets.all(5), child: pw.Text('${a.totalFaltas}', style: pw.TextStyle(font: font, fontSize: 8, color: a.totalFaltas >= 2 ? PdfColors.orange700 : PdfColors.black))),
+                ])),
+              ],
+            ),
+            if (atRiskAlumnos.length > 30)
+              pw.Text('... y ${atRiskAlumnos.length - 30} más', style: pw.TextStyle(font: font, fontSize: 8, color: PdfColors.grey600)),
+          ],
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  /// Genera un reporte PDF completo para un alumno (todas sus materias en un solo PDF)
+  static Future<Uint8List> generarReporteAlumnoCompleto({
+    required List<Alumno> materias,
+    String? logoPath,
+    String nombreInstitucion = 'Universidad Politécnica de Querétaro',
+    bool incluirFirma = false,
+    String textoFirma = '',
+  }) async {
+    final pdf = pw.Document();
+    final font = await PdfGoogleFonts.notoSansRegular();
+    final fontBold = await PdfGoogleFonts.notoSansBold();
+
+    pw.ImageProvider? logo;
+    if (logoPath != null && File(logoPath).existsSync()) {
+      try {
+        logo = pw.MemoryImage(await File(logoPath).readAsBytes());
+      } catch (_) {}
+    }
+
+    final alumno = materias.first;
+
+    // Aggregate stats
+    final cals = materias
+        .map((a) => a.calcularCalificacionFinalCalculada())
+        .whereType<double>()
+        .toList();
+    final promedioGlobal =
+        cals.isEmpty ? null : cals.reduce((a, b) => a + b) / cals.length;
+    final aprobadas = cals.where((c) => c >= 7.0).length;
+    final reprobadas = cals.where((c) => c < 7.0).length;
+    final sinCalificar = materias.length - cals.length;
+    final totalFaltas =
+        materias.fold<int>(0, (s, a) => s + a.totalFaltas);
+    final estaEnRiesgo = materias.any((a) => a.estaEnRiesgo);
+
+    pdf.addPage(
+      pw.MultiPage(
+        pageFormat: PdfPageFormat.a4,
+        margin: const pw.EdgeInsets.all(28),
+        header: (ctx) => pw.Column(children: [
+          _buildHeader(
+              nombreInstitucion: nombreInstitucion,
+              logo: logo,
+              font: font,
+              fontBold: fontBold),
+          pw.SizedBox(height: 4),
+          pw.Divider(),
+        ]),
+        footer: (ctx) => _buildFooter(
+          fechaGeneracion: DateTime.now(),
+          incluirFirma: incluirFirma,
+          textoFirma: textoFirma,
+          font: font,
+        ),
+        build: (ctx) => [
+          pw.Center(
+            child: pw.Text('REPORTE INDIVIDUAL DE CALIFICACIONES',
+                style: pw.TextStyle(font: fontBold, fontSize: 15)),
+          ),
+          pw.SizedBox(height: 12),
+
+          // Student data
+          pw.Container(
+            padding: const pw.EdgeInsets.all(10),
+            decoration: pw.BoxDecoration(
+              border: pw.Border.all(color: PdfColors.indigo700),
+              borderRadius: pw.BorderRadius.circular(4),
+            ),
+            child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text('DATOS DEL ESTUDIANTE',
+                      style: pw.TextStyle(
+                          font: fontBold,
+                          fontSize: 10,
+                          color: PdfColors.indigo700)),
+                  pw.SizedBox(height: 6),
+                  pw.Row(children: [
+                    pw.Expanded(
+                        child: _infoRowPdf(
+                            'Nombre', alumno.nombre, font, fontBold)),
+                    pw.Expanded(
+                        child: _infoRowPdf('Matrícula', alumno.matricula,
+                            font, fontBold)),
+                  ]),
+                  pw.SizedBox(height: 4),
+                  pw.Row(children: [
+                    pw.Expanded(
+                        child: _infoRowPdf(
+                            'Carrera', alumno.carrera, font, fontBold)),
+                    pw.Expanded(
+                        child: _infoRowPdf(
+                            'Grupo', alumno.grupo, font, fontBold)),
+                  ]),
+                  if (alumno.generacion != null ||
+                      (alumno.nombreTutor != null &&
+                          alumno.nombreTutor!.isNotEmpty)) ...[
+                    pw.SizedBox(height: 4),
+                    pw.Row(children: [
+                      if (alumno.generacion != null)
+                        pw.Expanded(
+                            child: _infoRowPdf('Generación',
+                                alumno.generacion!, font, fontBold)),
+                      if (alumno.nombreTutor != null &&
+                          alumno.nombreTutor!.isNotEmpty)
+                        pw.Expanded(
+                            child: _infoRowPdf('Tutor',
+                                alumno.nombreTutor!, font, fontBold)),
+                    ]),
+                  ],
+                  pw.SizedBox(height: 4),
+                  pw.Row(children: [
+                    pw.Expanded(
+                        child: _infoRowPdf(
+                            'Género',
+                            alumno.genero == 'F'
+                                ? 'Femenino'
+                                : alumno.genero == 'M'
+                                    ? 'Masculino'
+                                    : alumno.genero,
+                            font,
+                            fontBold)),
+                    pw.Expanded(
+                        child: _infoRowPdf(
+                            'Tipo de Curso',
+                            alumno.esRecursamiento
+                                ? 'Recursamiento'
+                                : 'Normal',
+                            font,
+                            fontBold)),
+                  ]),
+                ]),
+          ),
+
+          pw.SizedBox(height: 10),
+
+          // Summary stats
+          pw.Container(
+            padding: const pw.EdgeInsets.all(10),
+            decoration: pw.BoxDecoration(
+              color: estaEnRiesgo ? PdfColors.orange50 : PdfColors.green50,
+              border: pw.Border.all(
+                  color:
+                      estaEnRiesgo ? PdfColors.orange : PdfColors.green700),
+              borderRadius: pw.BorderRadius.circular(4),
+            ),
+            child: pw.Column(
+                crossAxisAlignment: pw.CrossAxisAlignment.start,
+                children: [
+                  pw.Text('RESUMEN ACADÉMICO',
+                      style: pw.TextStyle(
+                          font: fontBold,
+                          fontSize: 10,
+                          color: estaEnRiesgo
+                              ? PdfColors.orange700
+                              : PdfColors.green700)),
+                  pw.SizedBox(height: 8),
+                  pw.Row(children: [
+                    pw.Expanded(
+                        child: pw.Column(
+                            crossAxisAlignment:
+                                pw.CrossAxisAlignment.center,
+                            children: [
+                          pw.Text(
+                              promedioGlobal?.toStringAsFixed(2) ?? 'S/C',
+                              style: pw.TextStyle(
+                                  font: fontBold,
+                                  fontSize: 22,
+                                  color: (promedioGlobal ?? 0) >= 7.0
+                                      ? PdfColors.green700
+                                      : PdfColors.red)),
+                          pw.Text('Promedio Global',
+                              style: pw.TextStyle(
+                                  font: font, fontSize: 8)),
+                        ])),
+                    pw.Expanded(
+                        child: pw.Column(
+                            crossAxisAlignment:
+                                pw.CrossAxisAlignment.center,
+                            children: [
+                          pw.Text('$aprobadas',
+                              style: pw.TextStyle(
+                                  font: fontBold,
+                                  fontSize: 22,
+                                  color: PdfColors.green700)),
+                          pw.Text('Materias Aprobadas',
+                              style:
+                                  pw.TextStyle(font: font, fontSize: 8)),
+                        ])),
+                    pw.Expanded(
+                        child: pw.Column(
+                            crossAxisAlignment:
+                                pw.CrossAxisAlignment.center,
+                            children: [
+                          pw.Text('$reprobadas',
+                              style: pw.TextStyle(
+                                  font: fontBold,
+                                  fontSize: 22,
+                                  color: PdfColors.red)),
+                          pw.Text('Materias Reprobadas',
+                              style:
+                                  pw.TextStyle(font: font, fontSize: 8)),
+                        ])),
+                    pw.Expanded(
+                        child: pw.Column(
+                            crossAxisAlignment:
+                                pw.CrossAxisAlignment.center,
+                            children: [
+                          pw.Text('$totalFaltas',
+                              style: pw.TextStyle(
+                                  font: fontBold,
+                                  fontSize: 22,
+                                  color: totalFaltas >= 4
+                                      ? PdfColors.red
+                                      : PdfColors.grey800)),
+                          pw.Text('Total Faltas',
+                              style:
+                                  pw.TextStyle(font: font, fontSize: 8)),
+                        ])),
+                    if (sinCalificar > 0)
+                      pw.Expanded(
+                          child: pw.Column(
+                              crossAxisAlignment:
+                                  pw.CrossAxisAlignment.center,
+                              children: [
+                            pw.Text('$sinCalificar',
+                                style: pw.TextStyle(
+                                    font: fontBold,
+                                    fontSize: 22,
+                                    color: PdfColors.grey600)),
+                            pw.Text('Sin Calificar',
+                                style: pw.TextStyle(
+                                    font: font, fontSize: 8)),
+                          ])),
+                  ]),
+                  if (estaEnRiesgo) ...[
+                    pw.SizedBox(height: 6),
+                    pw.Text('! ALUMNO EN RIESGO ACADEMICO',
+                        style: pw.TextStyle(
+                            font: fontBold,
+                            fontSize: 9,
+                            color: PdfColors.orange700)),
+                  ],
+                ]),
+          ),
+
+          pw.SizedBox(height: 12),
+
+          // Subject table
+          pw.Text('CALIFICACIONES POR MATERIA',
+              style: pw.TextStyle(font: fontBold, fontSize: 11)),
+          pw.SizedBox(height: 5),
+          pw.Table(
+            border: pw.TableBorder.all(color: PdfColors.grey300),
+            columnWidths: {
+              0: const pw.FlexColumnWidth(3.2),
+              1: const pw.FlexColumnWidth(0.9),
+              2: const pw.FlexColumnWidth(0.9),
+              3: const pw.FlexColumnWidth(0.9),
+              4: const pw.FlexColumnWidth(0.9),
+              5: const pw.FlexColumnWidth(0.9),
+              6: const pw.FlexColumnWidth(0.9),
+              7: const pw.FlexColumnWidth(1.2),
+              8: const pw.FlexColumnWidth(0.8),
+              9: const pw.FlexColumnWidth(1.3),
+            },
+            children: [
+              pw.TableRow(
+                decoration:
+                    const pw.BoxDecoration(color: PdfColors.indigo700),
+                children: [
+                  _thCell('Materia', fontBold, PdfColors.white),
+                  _thCell('P1', fontBold, PdfColors.white),
+                  _thCell('F1', fontBold, PdfColors.white),
+                  _thCell('P2', fontBold, PdfColors.white),
+                  _thCell('F2', fontBold, PdfColors.white),
+                  _thCell('P3', fontBold, PdfColors.white),
+                  _thCell('F3', fontBold, PdfColors.white),
+                  _thCell('Calc.Final', fontBold, PdfColors.white),
+                  _thCell('Faltas', fontBold, PdfColors.white),
+                  _thCell('Estado', fontBold, PdfColors.white),
+                ],
+              ),
+              ...materias.map((m) {
+                final cal = m.calcularCalificacionFinalCalculada();
+                final ap = cal != null && cal >= 7.0;
+                final rowColor = cal == null
+                    ? PdfColors.grey100
+                    : ap
+                        ? PdfColors.white
+                        : PdfColors.red50;
+                return pw.TableRow(
+                  decoration: pw.BoxDecoration(color: rowColor),
+                  children: [
+                    _tdCell(m.nombreMateria, font),
+                    _tdCell(_fmtD(m.parcial1), font),
+                    _tdCell(_fmtD(m.parcialFinal1), font),
+                    _tdCell(_fmtD(m.parcial2), font),
+                    _tdCell(_fmtD(m.parcialFinal2), font),
+                    _tdCell(_fmtD(m.parcial3), font),
+                    _tdCell(_fmtD(m.parcialFinal3), font),
+                    _tdCell(
+                      cal?.toStringAsFixed(2) ?? 'S/C',
+                      fontBold,
+                      color: cal == null
+                          ? PdfColors.grey
+                          : ap
+                              ? PdfColors.green700
+                              : PdfColors.red,
+                    ),
+                    _tdCell(
+                      '${m.totalFaltas}',
+                      font,
+                      color: m.totalFaltas >= 3
+                          ? PdfColors.red
+                          : PdfColors.black,
+                    ),
+                    _tdCell(
+                      cal == null
+                          ? 'S/C'
+                          : ap
+                              ? 'Aprobado'
+                              : 'Reprobado',
+                      font,
+                      color: cal == null
+                          ? PdfColors.grey600
+                          : ap
+                              ? PdfColors.green700
+                              : PdfColors.red,
+                    ),
+                  ],
+                );
+              }),
+            ],
+          ),
+          pw.SizedBox(height: 6),
+          pw.Text(
+            'P1/P2/P3 = Calificación del parcial  •  F1/F2/F3 = Calificación final del parcial  •  Calc.Final = Promedio calculado de los tres parciales.',
+            style:
+                pw.TextStyle(font: font, fontSize: 7, color: PdfColors.grey600),
+          ),
+        ],
+      ),
+    );
+
+    return pdf.save();
+  }
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  static pw.Widget _thCell(String text, pw.Font font, PdfColor color) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+      child: pw.Text(text,
+          style: pw.TextStyle(font: font, fontSize: 8, color: color)),
+    );
+  }
+
+  static pw.Widget _tdCell(String text, pw.Font font, {PdfColor? color}) {
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+      child: pw.Text(text,
+          style: pw.TextStyle(
+              font: font, fontSize: 8, color: color ?? PdfColors.black)),
+    );
+  }
+
+  static pw.Widget _infoRowPdf(
+      String label, String value, pw.Font font, pw.Font fontBold) {
+    return pw.RichText(
+      text: pw.TextSpan(children: [
+        pw.TextSpan(
+            text: '$label: ',
+            style: pw.TextStyle(font: fontBold, fontSize: 9)),
+        pw.TextSpan(
+            text: value, style: pw.TextStyle(font: font, fontSize: 9)),
+      ]),
+    );
+  }
+
+  static String _fmtD(double? val) {
+    if (val == null) return '-';
+    return val.toStringAsFixed(1);
   }
 
   /// Guarda un PDF en el directorio de documentos

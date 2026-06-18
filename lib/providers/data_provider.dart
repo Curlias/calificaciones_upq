@@ -171,9 +171,26 @@ class DataProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Aplica filtros actuales
-  void _aplicarFiltros() {
-    aplicarFiltros();
+  /// Aplica filtros actuales (internos)
+  void _aplicarFiltros() => aplicarFiltros();
+
+  /// Sincroniza y aplica los filtros definidos en ConfigProvider
+  void sincronizarFiltros({
+    bool soloAprobados = false,
+    bool soloReprobados = false,
+    bool soloRecursamiento = false,
+    String carrera = '',
+    String materia = '',
+    double umbral = 7.0,
+  }) {
+    aplicarFiltros(
+      soloAprobados: soloAprobados,
+      soloReprobados: soloReprobados,
+      soloRecursamiento: soloRecursamiento,
+      carrera: carrera.isNotEmpty ? carrera : null,
+      materia: materia.isNotEmpty ? materia : null,
+      umbral: umbral,
+    );
   }
 
   /// Calcula estadísticas generales
@@ -276,6 +293,58 @@ class DataProvider extends ChangeNotifier {
   /// Obtiene lista de grupos únicos
   List<String> get gruposUnicos {
     return _alumnos.map((a) => a.grupo).toSet().toList()..sort();
+  }
+
+  /// Todos los alumnos únicos en riesgo (sin duplicar por materia)
+  List<Alumno> get alumnosEnRiesgoGlobal {
+    final vistos = <String>{};
+    return _alumnos.where((a) {
+      if (vistos.contains(a.matricula)) return false;
+      vistos.add(a.matricula);
+      return a.estaEnRiesgo;
+    }).toList()
+      ..sort((a, b) => b.totalFaltas.compareTo(a.totalFaltas));
+  }
+
+  /// Lista de materias ordenadas por dificultad (promedio más bajo primero)
+  List<Map<String, dynamic>> get materiasPorDificultad {
+    final Map<String, List<double>> calsPorMateria = {};
+    for (final a in _alumnos) {
+      final cal = a.calcularCalificacionFinalCalculada();
+      if (cal != null) {
+        calsPorMateria.putIfAbsent(a.nombreMateria, () => []).add(cal);
+      }
+    }
+    final result = calsPorMateria.entries.map((e) {
+      final prom = e.value.reduce((a, b) => a + b) / e.value.length;
+      return {'materia': e.key, 'promedio': prom, 'total': e.value.length};
+    }).toList();
+    result.sort((a, b) => (a['promedio'] as double).compareTo(b['promedio'] as double));
+    return result;
+  }
+
+  /// Distribución global por rangos de calificación
+  Map<String, int> get distribucionRangosGlobal {
+    final dist = <String, int>{'0–5': 0, '5–7': 0, '7–8': 0, '8–9': 0, '9–10': 0, 'S/C': 0};
+    final vistos = <String>{};
+    for (final a in _alumnos) {
+      final key = '${a.matricula}_${a.nombreMateria}';
+      if (vistos.contains(key)) continue;
+      vistos.add(key);
+      dist[a.rangoCalificacion] = (dist[a.rangoCalificacion] ?? 0) + 1;
+    }
+    return dist;
+  }
+
+  /// Total de alumnos que necesitan extraordinario
+  int get totalNecesitanExtraordinario {
+    final vistos = <String>{};
+    return _alumnos.where((a) {
+      final key = '${a.matricula}_${a.nombreMateria}';
+      if (vistos.contains(key)) return false;
+      vistos.add(key);
+      return a.necesitaExtraordinario;
+    }).length;
   }
 
   /// Obtiene estadísticas por carrera

@@ -5,11 +5,13 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../providers/data_provider.dart';
 import '../../providers/config_provider.dart';
 import '../../services/storage_service.dart';
+import '../../services/excel_export_service.dart';
 import '../../models/grupo.dart';
 import '../widgets/estadisticas_card.dart';
 import '../widgets/grafica_distribucion.dart';
 import '../widgets/tabla_grupos.dart';
 import '../widgets/vista_generaciones.dart';
+import '../widgets/alumnos_riesgo_widget.dart';
 import 'import_screen.dart';
 import 'import_config_screen.dart';
 import 'report_screen.dart';
@@ -194,9 +196,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const Divider(),
                   ListTile(
-                    leading: const Icon(Icons.file_download),
-                    title: const Text('Exportar Todo'),
-                    onTap: _exportarTodo,
+                    leading: const Icon(Icons.table_chart, color: Colors.green),
+                    title: const Text('Exportar a Excel'),
+                    onTap: () {
+                      Navigator.pop(context);
+                      _exportarTodo();
+                    },
                   ),
                 ],
                 const Divider(),
@@ -628,9 +633,21 @@ class _HomeScreenState extends State<HomeScreen> {
             totalReprobados: dataProvider.totalReprobados,
             totalSinCalificar: dataProvider.totalSinCalificar,
           ),
-          
+
+          const SizedBox(height: 16),
+
+          // Alumnos en riesgo (global)
+          AlumnosRiesgoWidget(
+            alumnos: dataProvider.alumnosEnRiesgoGlobal,
+            onVerPerfil: (matricula) => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => StudentProfileScreen(matricula: matricula),
+              ),
+            ),
+          ),
+
           const SizedBox(height: 24),
-          
+
           // Resumen de Generaciones
           if (dataProvider.generacionesDisponibles.isNotEmpty)
             _buildResumenGeneraciones(dataProvider),
@@ -970,7 +987,7 @@ class _HomeScreenState extends State<HomeScreen> {
   void _importarArchivo() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['xlsx', 'xls'],
+      allowedExtensions: ['xlsx', 'xls', 'xlsm', 'xlsb', 'csv'],
       allowMultiple: false,
     );
 
@@ -1401,11 +1418,39 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  void _exportarTodo() {
-    // TODO: Implementar exportación masiva
+  void _exportarTodo() async {
+    final dataProvider = Provider.of<DataProvider>(context, listen: false);
+    if (!dataProvider.tieneDatos) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No hay datos para exportar')),
+      );
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Exportación masiva en desarrollo')),
+      const SnackBar(content: Text('Generando Excel...')),
     );
+    try {
+      final path = await ExcelExportService.exportarAlumnos(
+        alumnos: dataProvider.alumnos,
+        nombreArchivo: 'calificaciones_completo_${DateTime.now().millisecondsSinceEpoch}',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(path != null ? 'Excel guardado: $path' : 'Error al exportar'),
+            backgroundColor: path != null ? Colors.green : Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
   }
 
   String _formatFecha(DateTime? fecha) {

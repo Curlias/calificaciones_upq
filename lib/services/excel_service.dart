@@ -1,12 +1,14 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:excel/excel.dart';
+import 'package:excel2003/excel2003.dart';
 import '../models/alumno.dart';
 import '../models/grupo.dart';
 
 class ExcelService {
   static const String _hojaGruposOfi = 'GruposOfi';
 
-  /// Parsea un archivo Excel y convierte los datos en listas de alumnos y grupos
+  /// Parsea un archivo Excel (.xlsx o .xls) y devuelve alumnos y grupos.
   static Future<Map<String, dynamic>> parseExcelFile(
     String filePath, {
     String? sheetName,
@@ -14,18 +16,18 @@ class ExcelService {
   }) async {
     try {
       final bytes = await File(filePath).readAsBytes();
-      final excel = Excel.decodeBytes(bytes);
-      
-      // Usar la hoja especificada o la hoja por defecto
-      final targetSheet = sheetName ?? _hojaGruposOfi;
-      
-      // Verificar que existe la hoja
-      if (!excel.tables.containsKey(targetSheet)) {
-        throw Exception('No se encontró la hoja "$targetSheet" en el archivo Excel');
-      }
+      final extension = filePath.split('.').last.toLowerCase();
 
-      final sheet = excel.tables[targetSheet]!;
-      final alumnos = await _parseAlumnos(sheet, columnMapping: columnMapping);
+      // Convertir a una lista uniforme de filas (List<List<dynamic>>)
+      // Estrategia: intentar el parser correspondiente a la extensión primero;
+      // si falla (e.g. .xls con contenido OOXML), intentar el otro parser.
+      final List<List<dynamic>> rawRows = _leerFilas(
+        bytes,
+        extension: extension,
+        sheetName: sheetName,
+      );
+
+      final alumnos = _parseAlumnos(rawRows, columnMapping: columnMapping);
       final grupos = organizarPorGrupos(alumnos);
 
       return {
@@ -44,60 +46,55 @@ class ExcelService {
     }
   }
 
-  /// Convierte las filas del Excel en objetos Alumno
-  static Future<List<Alumno>> _parseAlumnos(Sheet sheet, {Map<String, int>? columnMapping}) async {
+  /// Convierte filas dinámicas en objetos Alumno.
+  static List<Alumno> _parseAlumnos(
+    List<List<dynamic>> rows, {
+    Map<String, int>? columnMapping,
+  }) {
     final List<Alumno> alumnos = [];
-    final rows = sheet.rows;
-    
-    // Usar mapeo de columnas proporcionado o el predeterminado
     final mapping = columnMapping ?? _defaultColumnMapping();
-    
+
     if (rows.length < 2) {
       throw Exception('El archivo no contiene datos válidos');
     }
 
-    // Empezar desde la fila 2 (índice 1), asumiendo que la fila 1 son headers
+    // Fila 0 = encabezados, datos desde fila 1
     for (int i = 1; i < rows.length; i++) {
       try {
         final row = rows[i];
-        
-        // Obtener valores de las celdas usando el mapeo de columnas
-        final id = _getCellValue(row, mapping['ID']!) ?? '';
-        final matricula = _getCellValue(row, mapping['Matrícula']!) ?? '';
-        final nombre = _getCellValue(row, mapping['Nombre']!) ?? '';
-        final generoRaw = _getCellValue(row, mapping['Género']!) ?? '';
-        final genero = _normalizarGenero(generoRaw);
-        final carrera = _getCellValue(row, mapping['Carrera']!) ?? '';
+
+        final id = _val(row, mapping['ID']!) ?? '';
+        final matricula = _val(row, mapping['Matrícula']!) ?? '';
+        final nombre = _val(row, mapping['Nombre']!) ?? '';
+
+        // Saltar filas completamente vacías
+        if (matricula.isEmpty && nombre.isEmpty) continue;
+
+        final genero = _normalizarGenero(_val(row, mapping['Género']!) ?? '');
+        final carrera = _val(row, mapping['Carrera']!) ?? '';
         final generacion = mapping.containsKey('Generación')
-            ? _getCellValue(row, mapping['Generación']!)
+            ? _val(row, mapping['Generación']!)
             : null;
-        final grupo = _getCellValue(row, mapping['Grupo']!) ?? '';
-        final grupoMateria = mapping.containsKey('Grupo Materia') 
-            ? _getCellValue(row, mapping['Grupo Materia']!) 
+        final grupo = _val(row, mapping['Grupo']!) ?? '';
+        final grupoMateria = mapping.containsKey('Grupo Materia')
+            ? _val(row, mapping['Grupo Materia']!)
             : null;
-        final nombreMateria = _getCellValue(row, mapping['Materia']!) ?? '';
-        
-        // Parciales
-        final parcial1 = _parseDouble(_getCellValue(row, mapping['Parcial 1']!));
-        final parcial2 = _parseDouble(_getCellValue(row, mapping['Parcial 2']!));
-        final parcial3 = _parseDouble(_getCellValue(row, mapping['Parcial 3']!));
-        
-        // Parciales finales
-        final parcialFinal1 = _parseDouble(_getCellValue(row, mapping['Parcial Final 1']!));
-        final parcialFinal2 = _parseDouble(_getCellValue(row, mapping['Parcial Final 2']!));
-        final parcialFinal3 = _parseDouble(_getCellValue(row, mapping['Parcial Final 3']!));
-        
-        // Faltas
-        final faltasP1 = _parseInt(_getCellValue(row, mapping['Faltas P1']!));
-        final faltasP2 = _parseInt(_getCellValue(row, mapping['Faltas P2']!));
-        final faltasP3 = _parseInt(_getCellValue(row, mapping['Faltas P3']!));
-        
-        // Otros datos
-        final nombreProfesor = _getCellValue(row, mapping['Profesor']!) ?? '';
-        final nombreTutor = _getCellValue(row, mapping['Tutor']!);
-        final tipoCurso = _getCellValue(row, mapping['Tipo Curso']!) ?? 'N';
-        
-        final alumno = Alumno(
+        final nombreMateria = _val(row, mapping['Materia']!) ?? '';
+
+        final parcial1 = _dbl(_val(row, mapping['Parcial 1']!));
+        final parcial2 = _dbl(_val(row, mapping['Parcial 2']!));
+        final parcial3 = _dbl(_val(row, mapping['Parcial 3']!));
+        final parcialFinal1 = _dbl(_val(row, mapping['Parcial Final 1']!));
+        final parcialFinal2 = _dbl(_val(row, mapping['Parcial Final 2']!));
+        final parcialFinal3 = _dbl(_val(row, mapping['Parcial Final 3']!));
+        final faltasP1 = _int(_val(row, mapping['Faltas P1']!));
+        final faltasP2 = _int(_val(row, mapping['Faltas P2']!));
+        final faltasP3 = _int(_val(row, mapping['Faltas P3']!));
+        final nombreProfesor = _val(row, mapping['Profesor']!) ?? '';
+        final nombreTutor = _val(row, mapping['Tutor']!);
+        final tipoCurso = _val(row, mapping['Tipo Curso']!) ?? 'N';
+
+        alumnos.add(Alumno(
           id: id,
           matricula: matricula,
           nombre: nombre,
@@ -119,39 +116,30 @@ class ExcelService {
           parcial3: parcial3,
           parcialFinal3: parcialFinal3,
           faltasP3: faltasP3,
-        );
-        
-        alumnos.add(alumno);
-      } catch (e) {
-        // Continuar con la siguiente fila si hay error
-        print('Error en fila ${i + 1}: $e');
+        ));
+      } catch (_) {
+        continue;
       }
     }
-    
+
     return alumnos;
   }
 
-  /// Organiza los alumnos por grupos
+  /// Organiza los alumnos por grupos.
   static List<Grupo> organizarPorGrupos(List<Alumno> alumnos) {
     final Map<String, List<Alumno>> gruposMap = {};
-    
+
     for (final alumno in alumnos) {
-      // Agrupar solo por el grupo generacional, sin la materia
-      final grupoKey = alumno.grupo;
-      if (!gruposMap.containsKey(grupoKey)) {
-        gruposMap[grupoKey] = [];
-      }
-      gruposMap[grupoKey]!.add(alumno);
+      gruposMap.putIfAbsent(alumno.grupo, () => []).add(alumno);
     }
-    
+
     return gruposMap.entries.map((entry) {
       final alumnosGrupo = entry.value;
-      // Obtener la primera materia como referencia (o podría ser "Múltiples materias")
       final materiasUnicas = alumnosGrupo.map((a) => a.nombreMateria).toSet();
-      final nombreMateria = materiasUnicas.length == 1 
-          ? materiasUnicas.first 
+      final nombreMateria = materiasUnicas.length == 1
+          ? materiasUnicas.first
           : 'Múltiples materias';
-      
+
       return Grupo(
         nombre: entry.key,
         materia: nombreMateria,
@@ -163,118 +151,54 @@ class ExcelService {
     }).toList();
   }
 
-  /// Extrae el grupo generacional del grupo completo
-  /// Ejemplo: "IRT201-A" -> "IRT201", "IDIA-M" -> "IDIA"
-  static String _extraerGrupoGeneracional(String grupoCompleto) {
-    // Buscar patrón: letras seguidas de números (IRT201, IDIA101, etc.)
-    final regex = RegExp(r'^([A-Z]+\d+)', caseSensitive: true);
-    final match = regex.firstMatch(grupoCompleto);
-    if (match != null) {
-      return match.group(1)!;
-    }
-    
-    // Si no encuentra patrón, intenta separar por guión o espacio
-    if (grupoCompleto.contains('-')) {
-      return grupoCompleto.split('-').first.trim();
-    }
-    if (grupoCompleto.contains(' ')) {
-      return grupoCompleto.split(' ').first.trim();
-    }
-    
-    // Si no hay separador, devolver todo
-    return grupoCompleto;
-  }
+  /// Valida la estructura del archivo (solo XLSX; XLS siempre pasa).
+  static Future<Map<String, dynamic>> validateExcelStructure(
+    String filePath, {
+    String? sheetName,
+  }) async {
+    final extension = filePath.split('.').last.toLowerCase();
 
-  /// Obtiene el valor de una celda como String
-  static String? _getCellValue(List<Data?> row, int index) {
-    if (index >= row.length) return null;
-    final cell = row[index];
-    if (cell == null || cell.value == null) return null;
-    return cell.value.toString().trim();
-  }
-
-  /// Convierte un valor a double
-  static double? _parseDouble(String? value) {
-    if (value == null || value.isEmpty) return null;
-    try {
-      return double.parse(value);
-    } catch (e) {
-      return null;
+    // XLS: no podemos inspeccionar headers sin parsear, así que lo dejamos pasar
+    if (extension == 'xls') {
+      return {'isValid': true, 'errors': <String>[], 'warnings': <String>[]};
     }
-  }
 
-  /// Convierte un valor a int
-  static int _parseInt(String? value) {
-    if (value == null || value.isEmpty) return 0;
-    try {
-      return int.parse(value);
-    } catch (e) {
-      return 0;
-    }
-  }
-
-  /// Normaliza el género a M o F
-  static String _normalizarGenero(String genero) {
-    final generoLower = genero.toLowerCase().trim();
-    
-    // Masculino: M, masculino, hombre, h, male, man
-    if (generoLower.startsWith('m') || generoLower.startsWith('h') || 
-        generoLower == 'male' || generoLower == 'man') {
-      return 'M';
-    }
-    
-    // Femenino: F, femenino, mujer, m (cuando ya descartamos masculino), female, woman
-    if (generoLower.startsWith('f') || generoLower == 'mujer' || 
-        generoLower == 'female' || generoLower == 'woman') {
-      return 'F';
-    }
-    
-    // Por defecto, devolver el valor original
-    return genero.toUpperCase();
-  }
-
-  /// Valida la estructura del archivo Excel
-  static Future<Map<String, dynamic>> validateExcelStructure(String filePath, {String? sheetName}) async {
     try {
       final bytes = await File(filePath).readAsBytes();
       final excel = Excel.decodeBytes(bytes);
-      
       final errors = <String>[];
       final warnings = <String>[];
 
-      // Si se especifica una hoja, validar esa hoja; sino, usar la hoja por defecto
-      final targetSheet = sheetName ?? _hojaGruposOfi;
-      
-      // Verificar que existe la hoja especificada
-      if (!excel.tables.containsKey(targetSheet)) {
-        errors.add('No se encontró la hoja "$targetSheet"');
-      } else {
-        final sheet = excel.tables[targetSheet]!;
-        final rows = sheet.rows;
+      if (excel.tables.isEmpty) {
+        errors.add('El archivo no contiene hojas de cálculo válidas');
+        return {'isValid': false, 'errors': errors, 'warnings': warnings};
+      }
 
-        // Verificar que tiene al menos 2 filas (header + data)
-        if (rows.length < 2) {
-          errors.add('La hoja "$targetSheet" no contiene datos');
-        } else {
-          final headerRow = rows[0];
-          
-          // Verificar columnas mínimas requeridas (ajustar según necesidad)
-          final requiredColumns = [
-            'ID', 'Matricula', 'Alumno', 'Genero', 'Carrera', 'Grupo',
-            'Nombre de la Materia', 'Parcial 1', 'Parcial 2', 'Parcial 3'
-          ];
-          
-          for (int i = 0; i < requiredColumns.length && i < headerRow.length; i++) {
-            final cellValue = _getCellValue(headerRow, i);
-            if (cellValue == null || !cellValue.contains(requiredColumns[i].split(' ')[0])) {
-              warnings.add('Columna ${i + 1}: Se esperaba "${requiredColumns[i]}"');
-            }
+      final targetSheet = sheetName ?? _hojaGruposOfi;
+      final sheetToUse = excel.tables.containsKey(targetSheet)
+          ? targetSheet
+          : excel.tables.keys.first;
+
+      final sheet = excel.tables[sheetToUse]!;
+      final rows = sheet.rows;
+
+      if (rows.length < 2) {
+        errors.add('La hoja "$sheetToUse" no contiene datos suficientes (mínimo 2 filas)');
+      } else {
+        final headerRow = rows[0];
+        final requiredColumns = [
+          'ID', 'Matricula', 'Alumno', 'Genero', 'Carrera', 'Grupo',
+          'Nombre de la Materia', 'Parcial 1', 'Parcial 2', 'Parcial 3',
+        ];
+        for (int i = 0; i < requiredColumns.length && i < headerRow.length; i++) {
+          final cellValue = headerRow[i]?.value?.toString();
+          if (cellValue == null ||
+              !cellValue.contains(requiredColumns[i].split(' ')[0])) {
+            warnings.add('Columna ${i + 1}: Se esperaba "${requiredColumns[i]}"');
           }
-          
-          // Advertencia sobre filas
-          if (rows.length > 1000) {
-            warnings.add('El archivo contiene ${rows.length - 1} filas. El procesamiento puede tardar.');
-          }
+        }
+        if (rows.length > 1000) {
+          warnings.add('El archivo contiene ${rows.length - 1} filas. El procesamiento puede tardar.');
         }
       }
 
@@ -292,7 +216,88 @@ class ExcelService {
     }
   }
 
-  /// Mapeo de columnas por defecto (mantiene compatibilidad con formato original)
+  // ── Parseo de filas con fallback automático ───────────────────────────────
+
+  /// Lee las filas del archivo usando el parser correcto.
+  /// Si el parser primario falla (p.ej. .xls con contenido OOXML) intenta el otro.
+  static List<List<dynamic>> _leerFilas(
+    Uint8List bytes, {
+    required String extension,
+    String? sheetName,
+  }) {
+    List<List<dynamic>> tryOoxml() {
+      final excel = Excel.decodeBytes(bytes);
+      final targetName = sheetName ?? _hojaGruposOfi;
+      final sheetToUse = excel.tables.containsKey(targetName)
+          ? targetName
+          : excel.tables.keys.first;
+      final sheet = excel.tables[sheetToUse]!;
+      return sheet.rows
+          .map((row) => row.map<dynamic>((cell) => cell?.value).toList())
+          .toList();
+    }
+
+    List<List<dynamic>> tryBiff8() {
+      final reader = XlsReader.fromBytes(bytes);
+      if (reader.sheetCount == 0) throw Exception('Sin hojas en el archivo XLS');
+      final nameToFind = sheetName ?? _hojaGruposOfi;
+      final xlsSheet = reader.sheetByName(nameToFind) ?? reader.sheet(0);
+      return xlsSheet.rows;
+    }
+
+    if (extension == 'xls') {
+      // .xls → intentar BIFF8 primero; si falla el archivo tiene contenido OOXML
+      try {
+        return tryBiff8();
+      } catch (_) {
+        return tryOoxml();
+      }
+    } else {
+      // .xlsx → intentar OOXML primero; fallback a BIFF8 por si acaso
+      try {
+        return tryOoxml();
+      } catch (_) {
+        return tryBiff8();
+      }
+    }
+  }
+
+  // ── Utilidades privadas ────────────────────────────────────────────────────
+
+  /// Extrae un valor de una fila dinámica como String, o null.
+  /// Convierte doubles enteros (ej: 123045385.0) a entero para evitar el sufijo ".0".
+  static String? _val(List<dynamic> row, int index) {
+    if (index >= row.length) return null;
+    final v = row[index];
+    if (v == null) return null;
+    if (v is double && v == v.truncateToDouble()) {
+      return v.toInt().toString();
+    }
+    return v.toString().trim();
+  }
+
+  static double? _dbl(String? value) {
+    if (value == null || value.isEmpty) return null;
+    return double.tryParse(value.replaceAll(',', '.'));
+  }
+
+  static int _int(String? value) {
+    if (value == null || value.isEmpty) return 0;
+    return int.tryParse(value) ?? double.tryParse(value)?.toInt() ?? 0;
+  }
+
+  /// Normaliza género a 'M' o 'F'. Verifica femenino primero.
+  static String _normalizarGenero(String genero) {
+    final g = genero.toLowerCase().trim();
+    if (g == 'f' || g == 'femenino' || g == 'mujer' || g == 'female' || g == 'woman') {
+      return 'F';
+    }
+    if (g == 'm' || g == 'masculino' || g == 'hombre' || g == 'h' || g == 'male' || g == 'man') {
+      return 'M';
+    }
+    return genero.toUpperCase();
+  }
+
   static Map<String, int> _defaultColumnMapping() {
     return {
       'ID': 0,

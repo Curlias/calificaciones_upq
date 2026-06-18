@@ -29,17 +29,22 @@ void main() async {
     });
   }
 
-  runApp(const CalificacionesApp());
+  // Cargar configuración persistida antes de mostrar la app
+  final config = ConfigProvider();
+  await config.cargar();
+
+  runApp(CalificacionesApp(config: config));
 }
 
 class CalificacionesApp extends StatelessWidget {
-  const CalificacionesApp({super.key});
+  final ConfigProvider config;
+  const CalificacionesApp({super.key, required this.config});
 
   @override
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => ConfigProvider()),
+        ChangeNotifierProvider.value(value: config),
         ChangeNotifierProvider(create: (_) => DataProvider()),
       ],
       child: Consumer<ConfigProvider>(
